@@ -26,69 +26,76 @@ def send_discord(message):
 
 
 def run_check():
-    # GitHub Actionsなら自動でheadless=True
     headless = os.getenv("GITHUB_ACTIONS") == "true"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        browser = p.chromium.launch(
+            headless=headless,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
         )
+
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800}
+        )
+
         page = context.new_page()
 
         try:
             print("システムにアクセス中...")
-            page.goto(BASE_URL, wait_until="networkidle")
+            page.goto(BASE_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
 
             # 公共施設予約メニュー
-            page.locator("input[type='submit'][value='公共施設予約メニュー']").first.wait_for(state="visible", timeout=20000)
-            page.locator("input[type='submit'][value='公共施設予約メニュー']").first.click()
+            page.locator("input[type='submit']", has_text="公共施設予約メニュー").first.click()
             page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
 
             # 空き照会
-            page.locator("input[type='submit'][value^='1. 空き照会']").first.wait_for(state="visible", timeout=20000)
-            page.locator("input[type='submit'][value^='1. 空き照会']").first.click()
+            page.locator("input[type='submit']", has_text="空き照会").first.click()
             page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
 
             # 次頁
-            page.locator("input[type='submit'][value='次頁']").first.wait_for(state="visible", timeout=15000)
-            page.locator("input[type='submit'][value='次頁']").first.click()
+            page.locator("input[type='submit']", has_text="次頁").first.click()
             page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
 
-            # 柳北スポーツプラザ
-            page.locator("input[type='submit'][value='柳北スポーツプラザ']").first.wait_for(state="visible", timeout=20000)
-            page.locator("input[type='submit'][value='柳北スポーツプラザ']").first.click()
+            # 柳北スポーツプラザ（部分一致）
+            print("施設選択待機中...")
+            page.locator("input[type='submit']", has_text="柳北").first.wait_for(timeout=30000)
+            page.locator("input[type='submit']", has_text="柳北").first.click()
             page.wait_for_load_state("networkidle")
-
-            # 次へ
-            page.locator("input[name='ucPCFooter$btnForward']").first.wait_for(state="visible", timeout=15000)
-            page.locator("input[name='ucPCFooter$btnForward']").first.click()
-            page.wait_for_load_state("networkidle")
-
-            # カレンダー表示
-            page.locator("input[name='rbCalendar'][value='カレンダー']").first.wait_for(state="visible", timeout=15000)
-            page.locator("input[name='rbCalendar'][value='カレンダー']").first.click()
-            page.wait_for_load_state("networkidle")
-
-            # 1ヶ月表示
-            page.locator("input[name='rbtnMonth'][value='1ヶ月']").first.wait_for(state="visible", timeout=15000)
-            page.locator("input[name='rbtnMonth'][value='1ヶ月']").first.click()
-            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
 
             # 次へ
-            page.locator("input[name='ucPCFooter$btnForward']").first.wait_for(state="visible", timeout=15000)
             page.locator("input[name='ucPCFooter$btnForward']").first.click()
             page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
 
-            # 体育館選択
-            page.locator("span:has-text('体育館')").first.wait_for(state="visible", timeout=15000)
+            # カレンダー
+            page.locator("input[name='rbCalendar']").first.check()
+            page.wait_for_timeout(2000)
+
+            # 1ヶ月
+            page.locator("input[name='rbtnMonth']").first.check()
+            page.wait_for_timeout(2000)
+
+            # 次へ
+            page.locator("input[name='ucPCFooter$btnForward']").first.click()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
+
+            # 体育館
+            page.locator("span:has-text('体育館')").first.wait_for(timeout=20000)
             page.locator("span:has-text('体育館')").first.click()
             page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
+
             print("体育館を選択しました。")
 
             all_vacant_info = []
 
-            # --- 空き取得 ---
             def scan_vacancy():
                 tables = page.locator("table").all()
                 for tbl in tables:
@@ -100,24 +107,22 @@ def run_check():
                             row_text = cell.locator("xpath=..").inner_text()
                             all_vacant_info.append(" ".join(row_text.split()))
 
-            # 現在期間
-            print("空き状況をスキャン中（現在期間）...")
+            print("空き状況スキャン（現在期間）...")
             scan_vacancy()
 
-            # 次期間
-            next_period = page.locator("a:has-text('次の期間を表示 >')")
+            next_period = page.locator("a:has-text('次の期間')")
             if next_period.count() > 0:
                 next_period.first.click()
                 page.wait_for_load_state("networkidle")
-                print("次の期間に移動しました。")
-                print("空き状況をスキャン中（次の期間）...")
+                page.wait_for_timeout(3000)
+
+                print("空き状況スキャン（次期間）...")
                 scan_vacancy()
 
-            # --- メッセージ作成 ---
+            # --- メッセージ ---
             if all_vacant_info:
                 body = "\n".join(list(dict.fromkeys(all_vacant_info)))
 
-                # 2000文字制限対策
                 if len(body) > 1800:
                     body = body[:1800] + "\n...(省略)"
 
@@ -126,12 +131,12 @@ def run_check():
                 msg = "🏸 **柳北スポーツプラザ 体育館 空き情報**\n\n空きはありません。"
 
             send_discord(msg)
-            print("空き状況を Discord に送信しました。")
+            print("送信完了")
 
         except Exception as e:
-            page.screenshot(path="debug_error.png")
             print(f"エラー発生: {e}")
-            print("debug_error.png を保存しました")
+            page.screenshot(path="debug_error.png", full_page=True)
+            print("debug_error.png 保存")
 
         finally:
             browser.close()
