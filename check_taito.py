@@ -31,7 +31,7 @@ def run_check():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=headless,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+            args=["--no-sandbox"]
         )
 
         context = browser.new_context(
@@ -49,12 +49,12 @@ def run_check():
             # 公共施設予約メニュー
             page.locator("input[type='submit']", has_text="公共施設予約メニュー").first.click()
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             # 空き照会
             page.locator("input[type='submit']", has_text="空き照会").first.click()
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             # 次頁
             page.locator("input[type='submit']", has_text="次頁").first.click()
@@ -62,23 +62,25 @@ def run_check():
             page.wait_for_timeout(3000)
 
             # 柳北スポーツプラザ（部分一致）
-            print("施設選択待機中...")
+            print("施設選択...")
             page.locator("input[type='submit']", has_text="柳北").first.wait_for(timeout=30000)
             page.locator("input[type='submit']", has_text="柳北").first.click()
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             # 次へ
             page.locator("input[name='ucPCFooter$btnForward']").first.click()
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
-
-            # カレンダー
-            page.locator("input[name='rbCalendar']").first.check()
             page.wait_for_timeout(2000)
 
-            # 1ヶ月
-            page.locator("input[name='rbtnMonth']").first.check()
+            # カレンダー（※clickに修正）
+            page.locator("input[type='submit']", has_text="カレンダー").first.click()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(2000)
+
+            # 1ヶ月（※clickに修正）
+            page.locator("input[type='submit']", has_text="1ヶ月").first.click()
+            page.wait_for_load_state("networkidle")
             page.wait_for_timeout(2000)
 
             # 次へ
@@ -92,7 +94,7 @@ def run_check():
             page.wait_for_load_state("networkidle")
             page.wait_for_timeout(3000)
 
-            print("体育館を選択しました。")
+            print("体育館を選択しました")
 
             all_vacant_info = []
 
@@ -107,16 +109,18 @@ def run_check():
                             row_text = cell.locator("xpath=..").inner_text()
                             all_vacant_info.append(" ".join(row_text.split()))
 
-            print("空き状況スキャン（現在期間）...")
+            # 現在期間
+            print("空きスキャン（現在）")
             scan_vacancy()
 
+            # 次期間
             next_period = page.locator("a:has-text('次の期間')")
             if next_period.count() > 0:
                 next_period.first.click()
                 page.wait_for_load_state("networkidle")
                 page.wait_for_timeout(3000)
 
-                print("空き状況スキャン（次期間）...")
+                print("空きスキャン（次）")
                 scan_vacancy()
 
             # --- メッセージ ---
@@ -136,7 +140,6 @@ def run_check():
         except Exception as e:
             print(f"エラー発生: {e}")
             page.screenshot(path="debug_error.png", full_page=True)
-            print("debug_error.png 保存")
 
         finally:
             browser.close()
