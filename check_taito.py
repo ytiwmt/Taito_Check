@@ -26,8 +26,11 @@ def send_discord(message):
 
 
 def run_check():
+    # GitHub Actionsなら自動でheadless=True
+    headless = os.getenv("GITHUB_ACTIONS") == "true"
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=headless)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
@@ -114,7 +117,7 @@ def run_check():
             if all_vacant_info:
                 body = "\n".join(list(dict.fromkeys(all_vacant_info)))
 
-                # 2000文字対策
+                # 2000文字制限対策
                 if len(body) > 1800:
                     body = body[:1800] + "\n...(省略)"
 
@@ -128,7 +131,7 @@ def run_check():
         except Exception as e:
             page.screenshot(path="debug_error.png")
             print(f"エラー発生: {e}")
-            print("debug_error.png にスクリーンショットを保存しました。")
+            print("debug_error.png を保存しました")
 
         finally:
             browser.close()
