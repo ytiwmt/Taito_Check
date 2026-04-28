@@ -1,8 +1,8 @@
-name: Run Taito Check
+name: Taito Check
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,18 +10,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # -------------------------
+      # Pythonセットアップ
+      # -------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install packages
+      # -------------------------
+      # 依存関係インストール（重要）
+      # -------------------------
+      - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 playwright
 
+      # -------------------------
+      # Playwrightブラウザ導入（必須）
+      # -------------------------
+      - name: Install Playwright browsers
+        run: |
+          playwright install --with-deps chromium
+
+      # -------------------------
+      # 実行
+      # -------------------------
       - name: Run script
         env:
           WEBHOOK_URL_Taito: ${{ secrets.WEBHOOK_URL_Taito }}
