@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v4.0"
+VERSION = "v4.1"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -63,7 +63,15 @@ def analyze(text, results, label):
     return "ok"
 
 # =========================
-# 日付クリック関数
+# 月取得チェック
+# =========================
+def get_month_signature(text):
+    # 「4/1」などを拾う
+    m = re.search(r"(\\d{1,2})/1", text)
+    return m.group(1) if m else "?"
+
+# =========================
+# 日付選択（検証付き）
 # =========================
 def select_date(page, year, month, day):
     log(f"📅 {year}/{month}/{day} を選択")
@@ -72,12 +80,20 @@ def select_date(page, year, month, day):
     page.locator("input[name='ucTermSetting$btnCalendar']").click()
     page.wait_for_selector("div.ajax__calendar_day")
 
-    # titleで指定（最安定）
     target = f"{year}年{month}月{day}日"
-    page.locator(f"div[title='{target}']").click()
+
+    # クリック（強制）
+    page.locator(f"div[title='{target}']").click(force=True)
 
     # 更新待ち
     page.wait_for_timeout(2000)
+
+    # ★確認用ログ
+    body = page.inner_text("body")
+    sig = get_month_signature(body)
+    log(f"📊 月シグネチャ: {sig}")
+
+    return body
 
 # =========================
 # メイン
@@ -89,15 +105,11 @@ def run_check():
         page = browser.new_page()
 
         try:
-            # -------------------------
             # 入口
-            # -------------------------
             page.goto(BASE_URL)
             page.wait_for_url("**Wg_ModeSelect.aspx**")
 
-            # -------------------------
-            # 遷移（元ルート）
-            # -------------------------
+            # 遷移
             page.locator("input[value='公共施設予約メニュー']").click()
             page.wait_for_selector("input[value^='1. 空き照会']")
 
@@ -110,9 +122,7 @@ def run_check():
             page.locator("input[value='柳北スポーツプラザ']").click()
             page.wait_for_selector("input[name='ucPCFooter$btnForward']")
 
-            # -------------------------
             # 表示設定
-            # -------------------------
             page.locator("input[name='ucPCFooter$btnForward']").click()
             page.wait_for_selector("input[name='rbCalendar']")
 
@@ -125,22 +135,22 @@ def run_check():
             # =========================
             # 4月
             # =========================
-            select_date(page, 2026, 4, 1)
-
-            log("📑 4月")
-            body_apr = page.inner_text("body")
+            body_apr = select_date(page, 2026, 4, 1)
             res_apr = parse(extract_gym(body_apr))
             analyze(body_apr, res_apr, "4月")
 
             # =========================
             # 5月
             # =========================
-            select_date(page, 2026, 5, 1)
-
-            log("📑 5月")
-            body_may = page.inner_text("body")
+            body_may = select_date(page, 2026, 5, 1)
             res_may = parse(extract_gym(body_may))
             analyze(body_may, res_may, "5月")
+
+            # =========================
+            # 検証
+            # =========================
+            if body_apr == body_may:
+                log("❌ 同一ページ（カレンダー未反映）")
 
             # =========================
             # 結果
