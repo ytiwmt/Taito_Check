@@ -1,149 +1,167 @@
 import requests
-import os
 from playwright.sync_api import sync_playwright
+import os
+import re
+import datetime
 
-# --- 設定 ---
+VERSION = "v4.0"
+
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
-BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
+BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
-def send_discord(message):
+def log(msg):
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {msg}")
+
+def send_discord(msg):
     if not WEBHOOK_URL_Taito:
-        print("\n【Webhook未設定】")
-        print(message)
+        log(msg)
         return
+    requests.post(WEBHOOK_URL_Taito, json={"content": msg})
 
-    try:
-        res = requests.post(
-            WEBHOOK_URL_Taito,
-            json={"content": message},
-            timeout=10
-        )
-        print(f"Discord status: {res.status_code}")
-        if res.status_code != 204:
-            print("送信失敗:", res.text)
-    except Exception as e:
-        print("Discord送信エラー:", e)
+# =========================
+# 解析
+# =========================
+def extract_gym(text):
+    if "体育館" not in text:
+        return ""
+    part = text.split("体育館", 1)[1]
+    if "庭球場" in part:
+        part = part.split("庭球場", 1)[0]
+    return part
 
+def parse(text):
+    text = re.sub(r"\s+", " ", text)
+    results = []
+    current_month = None
+    tokens = text.split()
 
+    for i in range(len(tokens) - 1):
+        t = tokens[i]
+        n = tokens[i + 1]
+
+        if t.isdigit() and 1 <= int(t) <= 12:
+            current_month = t
+            continue
+
+        if t.isdigit() and n in ["○", "△"]:
+            if current_month:
+                results.append(f"{current_month}/{t} {n}")
+
+    return results
+
+def analyze(text, results, label):
+    if "不正な遷移" in text:
+        log(f"{label}: ❌ エラー")
+        return "error"
+
+    if not results:
+        log(f"{label}: 🟡 空きなし")
+        return "empty"
+
+    log(f"{label}: 🟢 {results}")
+    return "ok"
+
+# =========================
+# 日付クリック関数
+# =========================
+def select_date(page, year, month, day):
+    log(f"📅 {year}/{month}/{day} を選択")
+
+    # カレンダー開く
+    page.locator("input[name='ucTermSetting$btnCalendar']").click()
+    page.wait_for_selector("div.ajax__calendar_day")
+
+    # titleで指定（最安定）
+    target = f"{year}年{month}月{day}日"
+    page.locator(f"div[title='{target}']").click()
+
+    # 更新待ち
+    page.wait_for_timeout(2000)
+
+# =========================
+# メイン
+# =========================
 def run_check():
-    headless = os.getenv("GITHUB_ACTIONS") == "true"
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=headless,
-            args=["--no-sandbox"]
-        )
-
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
-        )
-
-        page = context.new_page()
+        log(f"🚀 Playwright {VERSION}")
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
         try:
-            print("システムにアクセス中...")
-            page.goto(BASE_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            # -------------------------
+            # 入口
+            # -------------------------
+            page.goto(BASE_URL)
+            page.wait_for_url("**Wg_ModeSelect.aspx**")
 
-            # 公共施設予約メニュー
-            page.locator("input[type='submit']", has_text="公共施設予約メニュー").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            # -------------------------
+            # 遷移（元ルート）
+            # -------------------------
+            page.locator("input[value='公共施設予約メニュー']").click()
+            page.wait_for_selector("input[value^='1. 空き照会']")
 
-            # 空き照会
-            page.locator("input[type='submit']", has_text="空き照会").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            page.locator("input[value^='1. 空き照会']").click()
+            page.wait_for_selector("input[value='次頁']")
 
-            # 次頁
-            page.locator("input[type='submit']", has_text="次頁").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            page.locator("input[value='次頁']").click()
+            page.wait_for_selector("input[value='柳北スポーツプラザ']")
 
-            # 柳北スポーツプラザ（部分一致）
-            print("施設選択...")
-            page.locator("input[type='submit']", has_text="柳北").first.wait_for(timeout=30000)
-            page.locator("input[type='submit']", has_text="柳北").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            page.locator("input[value='柳北スポーツプラザ']").click()
+            page.wait_for_selector("input[name='ucPCFooter$btnForward']")
 
-            # 次へ
-            page.locator("input[name='ucPCFooter$btnForward']").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            # -------------------------
+            # 表示設定
+            # -------------------------
+            page.locator("input[name='ucPCFooter$btnForward']").click()
+            page.wait_for_selector("input[name='rbCalendar']")
 
-            # カレンダー（※clickに修正）
-            page.locator("input[type='submit']", has_text="カレンダー").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            page.locator("input[name='rbCalendar'][value='カレンダー']").click()
+            page.locator("input[name='rbtnMonth'][value='1ヶ月']").click()
 
-            # 1ヶ月（※clickに修正）
-            page.locator("input[type='submit']", has_text="1ヶ月").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            page.locator("input[name='ucPCFooter$btnForward']").click()
+            page.wait_for_selector("text=体育館")
 
-            # 次へ
-            page.locator("input[name='ucPCFooter$btnForward']").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            # =========================
+            # 4月
+            # =========================
+            select_date(page, 2026, 4, 1)
 
-            # 体育館
-            page.locator("span:has-text('体育館')").first.wait_for(timeout=20000)
-            page.locator("span:has-text('体育館')").first.click()
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            log("📑 4月")
+            body_apr = page.inner_text("body")
+            res_apr = parse(extract_gym(body_apr))
+            analyze(body_apr, res_apr, "4月")
 
-            print("体育館を選択しました")
+            # =========================
+            # 5月
+            # =========================
+            select_date(page, 2026, 5, 1)
 
-            all_vacant_info = []
+            log("📑 5月")
+            body_may = page.inner_text("body")
+            res_may = parse(extract_gym(body_may))
+            analyze(body_may, res_may, "5月")
 
-            def scan_vacancy():
-                tables = page.locator("table").all()
-                for tbl in tables:
-                    if "体育館" not in tbl.inner_text():
-                        continue
-                    for cell in tbl.locator("td").all():
-                        text = cell.inner_text().strip()
-                        if text in ["○", "△"]:
-                            row_text = cell.locator("xpath=..").inner_text()
-                            all_vacant_info.append(" ".join(row_text.split()))
+            # =========================
+            # 結果
+            # =========================
+            final = sorted(set(res_apr + res_may))
+            log(f"📦 FINAL: {final}")
 
-            # 現在期間
-            print("空きスキャン（現在）")
-            scan_vacancy()
-
-            # 次期間
-            next_period = page.locator("a:has-text('次の期間')")
-            if next_period.count() > 0:
-                next_period.first.click()
-                page.wait_for_load_state("networkidle")
-                page.wait_for_timeout(3000)
-
-                print("空きスキャン（次）")
-                scan_vacancy()
-
-            # --- メッセージ ---
-            if all_vacant_info:
-                body = "\n".join(list(dict.fromkeys(all_vacant_info)))
-
-                if len(body) > 1800:
-                    body = body[:1800] + "\n...(省略)"
-
-                msg = "🏸 **柳北スポーツプラザ 体育館 空き情報**\n\n" + body
+            if final:
+                msg = "@everyone\n🏸 柳北スポーツプラザ\n"
+                msg += "\n".join(final)
             else:
-                msg = "🏸 **柳北スポーツプラザ 体育館 空き情報**\n\n空きはありません。"
+                msg = "🏸 空きなし"
 
             send_discord(msg)
-            print("送信完了")
 
         except Exception as e:
-            print(f"エラー発生: {e}")
-            page.screenshot(path="debug_error.png", full_page=True)
+            log(f"🔥 エラー: {e}")
 
         finally:
             browser.close()
-
+            log("🔒 終了")
 
 if __name__ == "__main__":
     run_check()
