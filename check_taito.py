@@ -6,49 +6,35 @@ from playwright.sync_api import sync_playwright
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
-START_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
+URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
 # =========================
-# ログ
+# log
 # =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
 
 
-def send_discord(msg):
-    if not WEBHOOK_URL:
-        log(msg)
-        return
-    requests.post(WEBHOOK_URL, json={"content": msg})
+def send(msg):
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"content": msg})
 
 
 # =========================
-# UI安定待ち（本質）
-# =========================
-def wait_ui(page, selector):
-    page.wait_for_function(
-        """(sel) => {
-            const el = document.querySelector(sel);
-            return el && el.offsetParent !== null;
-        }""",
-        selector,
-        timeout=30000
-    )
-
-
-# =========================
-# 安定クリック
+# 安定クリック（これが核）
 # =========================
 def click(page, selector, label):
     log(f"➡ {label}")
 
-    wait_ui(page, selector)
+    el = page.locator(selector)
 
-    el = page.locator(selector).first
-    el.scroll_into_view_if_needed()
-    el.click()
+    # ★ visibleだけ対象（hidden完全排除）
+    el = el.filter(has_not=page.locator("[type='hidden']"))
+
+    el.first.wait_for(state="visible", timeout=30000)
+    el.first.click()
 
     page.wait_for_timeout(1200)
 
@@ -56,15 +42,6 @@ def click(page, selector, label):
 # =========================
 # 解析
 # =========================
-def extract_gym(text):
-    if "体育館" not in text:
-        return ""
-    part = text.split("体育館", 1)[1]
-    if "庭球場" in part:
-        part = part.split("庭球場", 1)[0]
-    return part
-
-
 def parse(text):
     text = re.sub(r"\s+", " ", text)
     res = []
@@ -89,8 +66,8 @@ def parse(text):
 # =========================
 # メイン
 # =========================
-def run_check():
-    log("🚀 Playwright v8.2（UI特化安定版）")
+def run():
+    log("🚀 Playwright v9.0（簡素安定版）")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -104,20 +81,23 @@ def run_check():
             # =========================
             # 入口
             # =========================
-            log(f"🌐 入口: {START_URL}")
-            page.goto(START_URL, wait_until="domcontentloaded")
-
+            log(f"🌐 {URL}")
+            page.goto(URL, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
 
-            # ★ hidden完全無視でUIだけ待つ
-            wait_ui(page, "input[value='公共施設予約メニュー']")
+            # ★重要：visibleだけで判定
+            page.wait_for_selector(
+                "input[value='公共施設予約メニュー']",
+                state="visible",
+                timeout=30000
+            )
 
             # =========================
-            # 遷移
+            # 遷移（固定パス）
             # =========================
-            click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
+            click(page, "input[name='rbtnYoyaku']", "空き照会")
             click(page, "input[value='次頁']", "次頁")
-            click(page, "input[value='柳北スポーツプラザ']", "施設選択")
+            click(page, "input[value='柳北スポーツプラザ']", "施設")
 
             click(page, "input[name='ucPCFooter$btnForward']", "進む")
 
@@ -132,45 +112,22 @@ def run_check():
             page.wait_for_timeout(1500)
 
             # =========================
-            # 1ページ
+            # 取得
             # =========================
-            log("📑 1ページ")
-            body1 = page.inner_text("body")
-            res1 = parse(extract_gym(body1))
-            log(f"1ページ: {res1}")
+            body = page.inner_text("body")
+            result = parse(body)
 
-            # =========================
-            # 次ページ
-            # =========================
-            page.evaluate("__doPostBack('btnNextPeriod','')")
-            page.wait_for_timeout(2000)
+            log(f"📦 RESULT: {result}")
 
-            # =========================
-            # 2ページ
-            # =========================
-            log("📑 2ページ")
-            body2 = page.inner_text("body")
-            res2 = parse(extract_gym(body2))
-            log(f"2ページ: {res2}")
-
-            # =========================
-            # 結果
-            # =========================
-            final = sorted(set(res1 + res2))
-            log(f"📦 FINAL: {final}")
-
-            send_discord(
-                "@everyone\n🏸 柳北スポーツプラザ\n" +
-                ("\n".join(final) if final else "空きなし")
-            )
+            send("🏸 柳北スポーツプラザ\n" + ("\n".join(result) if result else "空きなし"))
 
         except Exception as e:
-            log(f"🔥 エラー: {e}")
+            log(f"🔥 ERROR: {e}")
 
         finally:
-            log("🔒 終了")
             browser.close()
+            log("🔒 終了")
 
 
 if __name__ == "__main__":
-    run_check()
+    run()
