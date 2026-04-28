@@ -22,7 +22,44 @@ def send_discord(msg):
 
 
 # =========================
-# 解析（そのまま維持）
+# 安定クリック（最重要修正）
+# =========================
+def safe_click(page, selector, label, timeout=15000):
+    try:
+        log(f"➡ {label}")
+
+        el = page.locator(selector).first
+
+        # 表示待ち
+        el.wait_for(state="visible", timeout=timeout)
+
+        # 安定化待機（JSバインド待ち）
+        page.wait_for_timeout(600)
+
+        # スクロール
+        el.scroll_into_view_if_needed()
+
+        # クリック
+        el.click(timeout=timeout)
+
+        # 反映待ち（これ重要）
+        page.wait_for_timeout(1200)
+
+    except PWTimeout:
+        raise Exception(f"クリック失敗: {label}")
+
+
+# =========================
+# JS遷移（次ページ安定化）
+# =========================
+def js_postback(page, target):
+    log(f"JS POSTBACK: {target}")
+    page.evaluate(f"__doPostBack('{target}','')")
+    page.wait_for_timeout(1500)
+
+
+# =========================
+# 解析ロジック
 # =========================
 def extract_gym(text):
     if "体育館" not in text:
@@ -55,7 +92,7 @@ def parse(text):
 
 
 def analyze(text, results, label):
-    if "不正な遷移" in text or "エラー" in text:
+    if "不正な遷移" in text:
         log(f"{label}: ❌ エラー")
         return "error"
 
@@ -68,38 +105,10 @@ def analyze(text, results, label):
 
 
 # =========================
-# 安定クリック（コア改善）
-# =========================
-def safe_click(page, selector, label, timeout=8000):
-    try:
-        log(f"➡ {label}")
-
-        el = page.locator(selector).first
-
-        # 表示待ちではなく「存在＋有効化」待ち
-        el.wait_for(state="attached", timeout=timeout)
-        el.click(timeout=timeout)
-
-        page.wait_for_timeout(800)  # 遷移安定化用バッファ
-
-    except PWTimeout:
-        raise Exception(f"クリック失敗: {label}")
-
-
-# =========================
-# JS直叩き（安定化）
-# =========================
-def js_postback(page, target):
-    log(f"JS POSTBACK: {target}")
-    page.evaluate(f"__doPostBack('{target}','')")
-    page.wait_for_timeout(1200)
-
-
-# =========================
 # メイン
 # =========================
 def run_check():
-    log("🚀 Playwright v7.0 安定版")
+    log("🚀 Playwright v7.1 安定版")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -113,24 +122,26 @@ def run_check():
             log(f"🌐 アクセス: {URL}")
             page.goto(URL, wait_until="domcontentloaded")
 
-            # =========================
-            # メニュー遷移（テキスト依存排除）
-            # =========================
+            page.wait_for_timeout(1000)
+
+            # -------------------------
+            # 遷移（安定クリック）
+            # -------------------------
             safe_click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
             safe_click(page, "input[value='次頁']", "次頁")
             safe_click(page, "input[value='柳北スポーツプラザ']", "施設選択")
 
             safe_click(page, "input[name='ucPCFooter$btnForward']", "進む")
 
-            # =========================
+            # -------------------------
             # カレンダー設定
-            # =========================
+            # -------------------------
             safe_click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
             safe_click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
 
             safe_click(page, "input[name='ucPCFooter$btnForward']", "確定")
 
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(1500)
 
             # =========================
             # 1ページ
@@ -141,7 +152,7 @@ def run_check():
             analyze(body1, res1, "1ページ")
 
             # =========================
-            # 次ページ（JS安定版）
+            # 次ページ
             # =========================
             js_postback(page, "btnNextPeriod")
 
