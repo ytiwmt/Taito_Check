@@ -1,18 +1,14 @@
 import requests
 from playwright.sync_api import sync_playwright
 import os
-import re
 import datetime
 
-VERSION = "v4.2-debug"
+VERSION = "v4.3-dom"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
-# =========================
-# ログ
-# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
@@ -26,58 +22,41 @@ def send_discord(msg):
 
 
 # =========================
-# 解析
+# DOMベース抽出（核心）
 # =========================
-def extract_gym(text):
-    if "体育館" not in text:
-        return ""
-    part = text.split("体育館", 1)[1]
-    if "庭球場" in part:
-        part = part.split("庭球場", 1)[0]
-    return part
-
-
-def parse(text):
-    text = re.sub(r"\s+", " ", text)
+def extract_marks(page):
     results = []
-    current_month = None
-    tokens = text.split()
 
-    for i in range(len(tokens) - 1):
-        t = tokens[i]
-        n = tokens[i + 1]
+    # ○ と △ をDOMから直接取得
+    marks = page.locator("text=○, text=△")
+    count = marks.count()
 
-        if t.isdigit() and 1 <= int(t) <= 12:
-            current_month = t
-            continue
-
-        if t.isdigit() and n in ["○", "△"]:
-            if current_month:
-                results.append(f"{current_month}/{t} {n}")
+    for i in range(count):
+        txt = marks.nth(i).inner_text().strip()
+        if txt in ["○", "△"]:
+            results.append(txt)
 
     return results
 
 
 # =========================
-# デバッグ判定（重要）
+# デバッグ判定
 # =========================
-def debug_classify(body, parsed, label):
-    has_ok = "○" in body
-    has_mid = "△" in body
-    has_num = any(str(i) in body for i in range(1, 32))
+def classify(body_marks, parsed, label):
+    has_data = len(body_marks) > 0
 
     log(f"===== {label} DEBUG =====")
-    log(f"○: {has_ok} / △: {has_mid} / 日付: {has_num}")
+    log(f"DOM ○/△件数: {len(body_marks)}")
 
-    if not has_ok and not has_mid:
-        log(f"{label}: ❌ 完全に空（データなし）")
+    if not has_data:
+        log(f"{label}: ❌ データなし（本当に空）")
         return "no_data"
 
     if parsed:
         log(f"{label}: 🟢 解析成功")
         return "ok"
 
-    log(f"{label}: ⚠️ データあるが解析失敗")
+    log(f"{label}: ⚠️ DOMありだが解析失敗（異常）")
     return "parse_failed"
 
 
@@ -85,15 +64,11 @@ def debug_classify(body, parsed, label):
 # 安全クリック
 # =========================
 def click(page, selector, label):
-    try:
-        el = page.locator(selector).first
-        el.wait_for(state="attached", timeout=20000)
-        el.click()
-        page.wait_for_timeout(1200)
-        log(f"➡ {label}")
-    except Exception as e:
-        log(f"❌ クリック失敗 {label}: {e}")
-        raise
+    el = page.locator(selector).first
+    el.wait_for(state="attached", timeout=20000)
+    el.click()
+    page.wait_for_timeout(1200)
+    log(f"➡ {label}")
 
 
 # =========================
@@ -129,11 +104,8 @@ def run_check():
             # 1ページ
             # =========================
             log("📑 1ページ目")
-            body1 = page.inner_text("body")
-            gym1 = extract_gym(body1)
-            res1 = parse(gym1)
-
-            status1 = debug_classify(body1, res1, "1ページ")
+            marks1 = extract_marks(page)
+            classify(marks1, marks1, "1ページ")
 
             # =========================
             # 次ページ
@@ -147,23 +119,19 @@ def run_check():
             # 2ページ
             # =========================
             log("📑 2ページ目")
-            body2 = page.inner_text("body")
-            gym2 = extract_gym(body2)
-            res2 = parse(gym2)
-
-            status2 = debug_classify(body2, res2, "2ページ")
+            marks2 = extract_marks(page)
+            classify(marks2, marks2, "2ページ")
 
             # =========================
-            # 結果統合
+            # 結果
             # =========================
-            all_results = res1 + res2
-            final = sorted(set(all_results))
+            all_marks = marks1 + marks2
+            final = sorted(set(all_marks))
 
             log(f"📦 FINAL: {final}")
 
             if final:
-                msg = "@everyone\n🏸 柳北スポーツプラザ\n"
-                msg += "\n".join([f"🔴 {x}" for x in final])
+                msg = "@everyone\n🏸 柳北スポーツプラザ\n" + "\n".join(final)
             else:
                 msg = "🏸 空きなし"
 
