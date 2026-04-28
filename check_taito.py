@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright
 import os
 import datetime
 
-VERSION = "v4.4-real-dom"
+VERSION = "v4.5-sync-fix"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -25,21 +25,16 @@ def send_discord(msg):
 
 
 # =========================
-# ★実態対応抽出（重要）
+# DOM抽出（安定版）
 # =========================
 def extract_marks(page):
     results = []
 
-    links = page.locator("a")
-    count = links.count()
+    for el in page.locator("a").all():
+        text = el.inner_text().strip()
 
-    for i in range(count):
-        text = links.nth(i).inner_text().strip()
-
-        # 実態： "11選択△" / "12予約○"
         if "○" in text:
             results.append("○")
-
         if "△" in text:
             results.append("△")
 
@@ -58,6 +53,21 @@ def click(page, selector, label):
 
 
 # =========================
+# ★ページ更新待ち（重要）
+# =========================
+def wait_page_update(page, timeout=10000):
+    try:
+        # 体育館が再描画されるまで待つ（最重要アンカー）
+        page.wait_for_function(
+            "() => document.body.innerText.includes('体育館')",
+            timeout=timeout
+        )
+        log("✅ ページ更新確認")
+    except Exception:
+        log("⚠️ 更新待ちタイムアウト（続行）")
+
+
+# =========================
 # メイン
 # =========================
 def run_check():
@@ -72,7 +82,7 @@ def run_check():
             page.wait_for_timeout(2000)
 
             # -------------------------
-            # 遷移（そのまま）
+            # 遷移
             # -------------------------
             click(page, "input[value='公共施設予約メニュー']", "公共施設予約メニュー")
             click(page, "input[name='rbtnYoyaku']", "空き照会")
@@ -91,37 +101,33 @@ def run_check():
             # =========================
             log("📑 1ページ目")
             marks1 = extract_marks(page)
-
-            log(f"1ページ DOM結果: {marks1}")
+            log(f"1ページ: {marks1}")
 
             # =========================
-            # 次ページ
+            # 次ページ（ここが修正ポイント）
             # =========================
             log("⏭️ 次の期間")
+
             page.evaluate("document.getElementById('btnNextPeriod')?.click()")
-            page.wait_for_timeout(2000)
+
+            # ★重要：更新待ち（ここが本体修正）
+            wait_page_update(page)
+            page.wait_for_timeout(1000)
 
             # =========================
             # 2ページ
             # =========================
             log("📑 2ページ目")
             marks2 = extract_marks(page)
-
-            log(f"2ページ DOM結果: {marks2}")
+            log(f"2ページ: {marks2}")
 
             # =========================
-            # 集約
+            # 結果
             # =========================
-            all_marks = marks1 + marks2
-            final = sorted(set(all_marks))
-
+            final = sorted(set(marks1 + marks2))
             log(f"📦 FINAL: {final}")
 
-            if final:
-                msg = "@everyone\n🏸 柳北スポーツプラザ\n" + "\n".join(final)
-            else:
-                msg = "🏸 空きなし"
-
+            msg = "@everyone\n🏸 柳北スポーツプラザ\n" + ("\n".join(final) if final else "空きなし")
             send_discord(msg)
 
         except Exception as e:
