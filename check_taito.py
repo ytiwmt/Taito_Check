@@ -4,12 +4,15 @@ import os
 import re
 import datetime
 
-VERSION = "v4.1-stable"
+VERSION = "v4.2-debug"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
+# =========================
+# ログ
+# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
@@ -17,13 +20,13 @@ def log(msg):
 
 def send_discord(msg):
     if not WEBHOOK_URL_Taito:
-        log(f"通知設定なし: {msg}")
+        log(f"通知なし: {msg}")
         return
     requests.post(WEBHOOK_URL_Taito, json={"content": msg})
 
 
 # =========================
-# 解析ロジック
+# 解析
 # =========================
 def extract_gym(text):
     if "体育館" not in text:
@@ -55,37 +58,42 @@ def parse(text):
     return results
 
 
-def analyze(text, results, label):
-    if "不正な遷移" in text:
-        log(f"{label}: ❌ 不正遷移")
-        return "error"
+# =========================
+# デバッグ判定（重要）
+# =========================
+def debug_classify(body, parsed, label):
+    has_ok = "○" in body
+    has_mid = "△" in body
+    has_num = any(str(i) in body for i in range(1, 32))
 
-    if not results:
-        log(f"{label}: 🟡 空きなし")
-        return "empty"
+    log(f"===== {label} DEBUG =====")
+    log(f"○: {has_ok} / △: {has_mid} / 日付: {has_num}")
 
-    log(f"{label}: 🟢 空きあり -> {results}")
-    return "ok"
+    if not has_ok and not has_mid:
+        log(f"{label}: ❌ 完全に空（データなし）")
+        return "no_data"
+
+    if parsed:
+        log(f"{label}: 🟢 解析成功")
+        return "ok"
+
+    log(f"{label}: ⚠️ データあるが解析失敗")
+    return "parse_failed"
 
 
 # =========================
 # 安全クリック
 # =========================
-def safe_click(page, selector):
-    el = page.locator(selector).first
-    el.wait_for(state="attached", timeout=20000)
-    el.click()
-    page.wait_for_timeout(1200)
-
-
-# =========================
-# JSクリック（安定版）
-# =========================
-def js_click(page, element_id):
-    page.evaluate(f"""
-        const el = document.getElementById('{element_id}');
-        if (el) el.click();
-    """)
+def click(page, selector, label):
+    try:
+        el = page.locator(selector).first
+        el.wait_for(state="attached", timeout=20000)
+        el.click()
+        page.wait_for_timeout(1200)
+        log(f"➡ {label}")
+    except Exception as e:
+        log(f"❌ クリック失敗 {label}: {e}")
+        raise
 
 
 # =========================
@@ -105,15 +113,15 @@ def run_check():
             # -------------------------
             # 遷移
             # -------------------------
-            safe_click(page, "input[value='公共施設予約メニュー']")
-            safe_click(page, "input[name='rbtnYoyaku']")
-            safe_click(page, "input[value='次頁']")
-            safe_click(page, "input[value='柳北スポーツプラザ']")
+            click(page, "input[value='公共施設予約メニュー']", "公共施設予約メニュー")
+            click(page, "input[name='rbtnYoyaku']", "空き照会")
+            click(page, "input[value='次頁']", "次頁")
+            click(page, "input[value='柳北スポーツプラザ']", "施設")
 
-            safe_click(page, "input[name='ucPCFooter$btnForward']")
-            safe_click(page, "input[name='rbCalendar'][value='カレンダー']")
-            safe_click(page, "input[name='rbtnMonth'][value='1ヶ月']")
-            safe_click(page, "input[name='ucPCFooter$btnForward']")
+            click(page, "input[name='ucPCFooter$btnForward']", "進む")
+            click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
+            click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
+            click(page, "input[name='ucPCFooter$btnForward']", "確定")
 
             page.wait_for_timeout(1500)
 
@@ -122,15 +130,17 @@ def run_check():
             # =========================
             log("📑 1ページ目")
             body1 = page.inner_text("body")
-            res1 = parse(extract_gym(body1))
-            analyze(body1, res1, "1ページ")
+            gym1 = extract_gym(body1)
+            res1 = parse(gym1)
+
+            status1 = debug_classify(body1, res1, "1ページ")
 
             # =========================
-            # 次ページ（安定版）
+            # 次ページ
             # =========================
             log("⏭️ 次の期間")
 
-            js_click(page, "btnNextPeriod")
+            page.evaluate("document.getElementById('btnNextPeriod')?.click()")
             page.wait_for_timeout(2000)
 
             # =========================
@@ -138,16 +148,26 @@ def run_check():
             # =========================
             log("📑 2ページ目")
             body2 = page.inner_text("body")
-            res2 = parse(extract_gym(body2))
-            analyze(body2, res2, "2ページ")
+            gym2 = extract_gym(body2)
+            res2 = parse(gym2)
+
+            status2 = debug_classify(body2, res2, "2ページ")
 
             # =========================
-            # 結果
+            # 結果統合
             # =========================
-            final = sorted(set(res1 + res2))
+            all_results = res1 + res2
+            final = sorted(set(all_results))
+
             log(f"📦 FINAL: {final}")
 
-            send_discord("\n".join(final) if final else "空きなし")
+            if final:
+                msg = "@everyone\n🏸 柳北スポーツプラザ\n"
+                msg += "\n".join([f"🔴 {x}" for x in final])
+            else:
+                msg = "🏸 空きなし"
+
+            send_discord(msg)
 
         except Exception as e:
             log(f"🔥 ERROR: {e}")
