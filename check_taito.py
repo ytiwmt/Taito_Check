@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright
 import os
 import datetime
 
-VERSION = "v4.5-sync-fix"
+VERSION = "v4.6-dom-sync"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -25,7 +25,7 @@ def send_discord(msg):
 
 
 # =========================
-# DOM抽出（安定版）
+# ○△抽出（安定）
 # =========================
 def extract_marks(page):
     results = []
@@ -42,6 +42,26 @@ def extract_marks(page):
 
 
 # =========================
+# ★最重要：DOM差し替え待ち
+# =========================
+def wait_next_period(page):
+    # table領域で差し替え監視（最も安定）
+    old = page.locator("table").first.inner_html()
+
+    page.evaluate("document.getElementById('btnNextPeriod')?.click()")
+
+    try:
+        page.wait_for_function(
+            "old => document.querySelector('table')?.innerHTML !== old",
+            old,
+            timeout=15000
+        )
+        log("✅ 次ページ更新確認（table差し替え）")
+    except Exception:
+        log("⚠️ 更新未検知（続行）")
+
+
+# =========================
 # 安全クリック
 # =========================
 def click(page, selector, label):
@@ -50,21 +70,6 @@ def click(page, selector, label):
     el.click()
     page.wait_for_timeout(1200)
     log(f"➡ {label}")
-
-
-# =========================
-# ★ページ更新待ち（重要）
-# =========================
-def wait_page_update(page, timeout=10000):
-    try:
-        # 体育館が再描画されるまで待つ（最重要アンカー）
-        page.wait_for_function(
-            "() => document.body.innerText.includes('体育館')",
-            timeout=timeout
-        )
-        log("✅ ページ更新確認")
-    except Exception:
-        log("⚠️ 更新待ちタイムアウト（続行）")
 
 
 # =========================
@@ -104,19 +109,13 @@ def run_check():
             log(f"1ページ: {marks1}")
 
             # =========================
-            # 次ページ（ここが修正ポイント）
-            # =========================
-            log("⏭️ 次の期間")
-
-            page.evaluate("document.getElementById('btnNextPeriod')?.click()")
-
-            # ★重要：更新待ち（ここが本体修正）
-            wait_page_update(page)
-            page.wait_for_timeout(1000)
-
-            # =========================
             # 2ページ
             # =========================
+            log("⏭️ 次の期間")
+            wait_next_period(page)
+
+            page.wait_for_timeout(1000)
+
             log("📑 2ページ目")
             marks2 = extract_marks(page)
             log(f"2ページ: {marks2}")
