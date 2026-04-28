@@ -25,13 +25,17 @@ def send_discord(msg):
 
 
 # =========================
-# 安定待機（完全版）
+# UI安定待ち（本質）
 # =========================
-def stabilize(page):
-    page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(1500)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1000)
+def wait_ui(page, selector):
+    page.wait_for_function(
+        """(sel) => {
+            const el = document.querySelector(sel);
+            return el && el.offsetParent !== null;
+        }""",
+        selector,
+        timeout=30000
+    )
 
 
 # =========================
@@ -40,15 +44,13 @@ def stabilize(page):
 def click(page, selector, label):
     log(f"➡ {label}")
 
+    wait_ui(page, selector)
+
     el = page.locator(selector).first
-
-    el.wait_for(state="attached", timeout=20000)
-    page.wait_for_timeout(500)
-
     el.scroll_into_view_if_needed()
-    el.click(timeout=20000)
+    el.click()
 
-    stabilize(page)
+    page.wait_for_timeout(1200)
 
 
 # =========================
@@ -88,7 +90,7 @@ def parse(text):
 # メイン
 # =========================
 def run_check():
-    log("🚀 Playwright v8.0（入口安定化版）")
+    log("🚀 Playwright v8.2（UI特化安定版）")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -100,18 +102,18 @@ def run_check():
 
         try:
             # =========================
-            # 入口（ここが最重要修正）
+            # 入口
             # =========================
-            log(f"🌐 入口アクセス: {START_URL}")
+            log(f"🌐 入口: {START_URL}")
             page.goto(START_URL, wait_until="domcontentloaded")
 
-            stabilize(page)
+            page.wait_for_timeout(2000)
 
-            # ここでDOMが出るまで強制待機
-            page.wait_for_selector("input", timeout=20000)
+            # ★ hidden完全無視でUIだけ待つ
+            wait_ui(page, "input[value='公共施設予約メニュー']")
 
             # =========================
-            # メニュー遷移
+            # 遷移
             # =========================
             click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
             click(page, "input[value='次頁']", "次頁")
@@ -120,14 +122,14 @@ def run_check():
             click(page, "input[name='ucPCFooter$btnForward']", "進む")
 
             # =========================
-            # 表示設定
+            # 設定
             # =========================
             click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
             click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
 
             click(page, "input[name='ucPCFooter$btnForward']", "確定")
 
-            stabilize(page)
+            page.wait_for_timeout(1500)
 
             # =========================
             # 1ページ
@@ -135,14 +137,13 @@ def run_check():
             log("📑 1ページ")
             body1 = page.inner_text("body")
             res1 = parse(extract_gym(body1))
-
             log(f"1ページ: {res1}")
 
             # =========================
             # 次ページ
             # =========================
             page.evaluate("__doPostBack('btnNextPeriod','')")
-            stabilize(page)
+            page.wait_for_timeout(2000)
 
             # =========================
             # 2ページ
@@ -150,7 +151,6 @@ def run_check():
             log("📑 2ページ")
             body2 = page.inner_text("body")
             res2 = parse(extract_gym(body2))
-
             log(f"2ページ: {res2}")
 
             # =========================
