@@ -3,12 +3,15 @@ from playwright.sync_api import sync_playwright
 import os
 import datetime
 
-VERSION = "v4.3-dom"
+VERSION = "v4.4-real-dom"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
+# =========================
+# ログ
+# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
@@ -22,42 +25,25 @@ def send_discord(msg):
 
 
 # =========================
-# DOMベース抽出（核心）
+# ★実態対応抽出（重要）
 # =========================
 def extract_marks(page):
     results = []
 
-    # ○ と △ をDOMから直接取得
-    marks = page.locator("text=○, text=△")
-    count = marks.count()
+    links = page.locator("a")
+    count = links.count()
 
     for i in range(count):
-        txt = marks.nth(i).inner_text().strip()
-        if txt in ["○", "△"]:
-            results.append(txt)
+        text = links.nth(i).inner_text().strip()
+
+        # 実態： "11選択△" / "12予約○"
+        if "○" in text:
+            results.append("○")
+
+        if "△" in text:
+            results.append("△")
 
     return results
-
-
-# =========================
-# デバッグ判定
-# =========================
-def classify(body_marks, parsed, label):
-    has_data = len(body_marks) > 0
-
-    log(f"===== {label} DEBUG =====")
-    log(f"DOM ○/△件数: {len(body_marks)}")
-
-    if not has_data:
-        log(f"{label}: ❌ データなし（本当に空）")
-        return "no_data"
-
-    if parsed:
-        log(f"{label}: 🟢 解析成功")
-        return "ok"
-
-    log(f"{label}: ⚠️ DOMありだが解析失敗（異常）")
-    return "parse_failed"
 
 
 # =========================
@@ -86,7 +72,7 @@ def run_check():
             page.wait_for_timeout(2000)
 
             # -------------------------
-            # 遷移
+            # 遷移（そのまま）
             # -------------------------
             click(page, "input[value='公共施設予約メニュー']", "公共施設予約メニュー")
             click(page, "input[name='rbtnYoyaku']", "空き照会")
@@ -105,13 +91,13 @@ def run_check():
             # =========================
             log("📑 1ページ目")
             marks1 = extract_marks(page)
-            classify(marks1, marks1, "1ページ")
+
+            log(f"1ページ DOM結果: {marks1}")
 
             # =========================
             # 次ページ
             # =========================
             log("⏭️ 次の期間")
-
             page.evaluate("document.getElementById('btnNextPeriod')?.click()")
             page.wait_for_timeout(2000)
 
@@ -120,10 +106,11 @@ def run_check():
             # =========================
             log("📑 2ページ目")
             marks2 = extract_marks(page)
-            classify(marks2, marks2, "2ページ")
+
+            log(f"2ページ DOM結果: {marks2}")
 
             # =========================
-            # 結果
+            # 集約
             # =========================
             all_marks = marks1 + marks2
             final = sorted(set(all_marks))
