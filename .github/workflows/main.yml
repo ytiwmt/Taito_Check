@@ -1,6 +1,9 @@
 name: Taito Check
 
 on:
+  push:
+    paths:
+      - "**.py"   # ← Pythonファイル変更で自動実行
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -22,7 +25,7 @@ jobs:
           python-version: '3.11'
 
       # -------------------------
-      # 依存関係インストール（重要）
+      # 依存関係
       # -------------------------
       - name: Install dependencies
         run: |
@@ -30,7 +33,7 @@ jobs:
           pip install requests beautifulsoup4 playwright
 
       # -------------------------
-      # Playwrightブラウザ導入（必須）
+      # Playwrightブラウザ
       # -------------------------
       - name: Install Playwright browsers
         run: |
