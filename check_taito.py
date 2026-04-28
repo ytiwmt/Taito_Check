@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
-URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
+START_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
 # =========================
@@ -25,55 +25,34 @@ def send_discord(msg):
 
 
 # =========================
-# 画面安定待ち（重要）
+# 安定待機（完全版）
 # =========================
-def wait_stable(page):
+def stabilize(page):
     page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(800)
-    page.wait_for_function(
-        "() => document.readyState === 'complete'"
-    )
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(1500)
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
 
 
 # =========================
-# 安定クリック（完全版）
+# 安定クリック
 # =========================
-def safe_click(page, selector, label):
+def click(page, selector, label):
     log(f"➡ {label}")
 
     el = page.locator(selector).first
 
-    # DOM存在
     el.wait_for(state="attached", timeout=20000)
+    page.wait_for_timeout(500)
 
-    # 表示待ち
-    el.wait_for(state="visible", timeout=20000)
-
-    # 画面安定待ち（ここが重要）
-    wait_stable(page)
-
-    # スクロール
     el.scroll_into_view_if_needed()
-
-    # クリック
     el.click(timeout=20000)
 
-    # 遷移後安定待ち
-    wait_stable(page)
+    stabilize(page)
 
 
 # =========================
-# JS遷移
-# =========================
-def js_postback(page, target):
-    log(f"JS POSTBACK: {target}")
-    page.evaluate(f"__doPostBack('{target}','')")
-    wait_stable(page)
-
-
-# =========================
-# 解析（そのまま）
+# 解析
 # =========================
 def extract_gym(text):
     if "体育館" not in text:
@@ -105,20 +84,11 @@ def parse(text):
     return res
 
 
-def analyze(text, results, label):
-    if not results:
-        log(f"{label}: 🟡 空きなし")
-        return "empty"
-
-    log(f"{label}: 🟢 {results}")
-    return "ok"
-
-
 # =========================
 # メイン
 # =========================
 def run_check():
-    log("🚀 Playwright v7.2 安定最終寄せ")
+    log("🚀 Playwright v8.0（入口安定化版）")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -129,29 +99,35 @@ def run_check():
         page = browser.new_page()
 
         try:
-            log(f"🌐 アクセス: {URL}")
-            page.goto(URL, wait_until="domcontentloaded")
+            # =========================
+            # 入口（ここが最重要修正）
+            # =========================
+            log(f"🌐 入口アクセス: {START_URL}")
+            page.goto(START_URL, wait_until="domcontentloaded")
 
-            wait_stable(page)
+            stabilize(page)
+
+            # ここでDOMが出るまで強制待機
+            page.wait_for_selector("input", timeout=20000)
 
             # =========================
-            # 遷移
+            # メニュー遷移
             # =========================
-            safe_click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
-            safe_click(page, "input[value='次頁']", "次頁")
-            safe_click(page, "input[value='柳北スポーツプラザ']", "施設選択")
+            click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
+            click(page, "input[value='次頁']", "次頁")
+            click(page, "input[value='柳北スポーツプラザ']", "施設選択")
 
-            safe_click(page, "input[name='ucPCFooter$btnForward']", "進む")
+            click(page, "input[name='ucPCFooter$btnForward']", "進む")
 
             # =========================
-            # 設定
+            # 表示設定
             # =========================
-            safe_click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
-            safe_click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
+            click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
+            click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
 
-            safe_click(page, "input[name='ucPCFooter$btnForward']", "確定")
+            click(page, "input[name='ucPCFooter$btnForward']", "確定")
 
-            wait_stable(page)
+            stabilize(page)
 
             # =========================
             # 1ページ
@@ -159,17 +135,23 @@ def run_check():
             log("📑 1ページ")
             body1 = page.inner_text("body")
             res1 = parse(extract_gym(body1))
-            analyze(body1, res1, "1ページ")
+
+            log(f"1ページ: {res1}")
 
             # =========================
             # 次ページ
             # =========================
-            js_postback(page, "btnNextPeriod")
+            page.evaluate("__doPostBack('btnNextPeriod','')")
+            stabilize(page)
 
+            # =========================
+            # 2ページ
+            # =========================
             log("📑 2ページ")
             body2 = page.inner_text("body")
             res2 = parse(extract_gym(body2))
-            analyze(body2, res2, "2ページ")
+
+            log(f"2ページ: {res2}")
 
             # =========================
             # 結果
