@@ -1,27 +1,54 @@
 import requests
-from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 import os
 import re
 import datetime
 
-VERSION = "v4.1"
+VERSION = "v5.0"
 
-WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
+
+session = requests.Session()
 
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
 
 def send_discord(msg):
-    if not WEBHOOK_URL_Taito:
+    if not WEBHOOK_URL:
         log(msg)
         return
-    requests.post(WEBHOOK_URL_Taito, json={"content": msg})
+    requests.post(WEBHOOK_URL, json={"content": msg})
 
-# =========================
+# -------------------------
+# hidden取得
+# -------------------------
+def get_hidden(soup):
+    data = {}
+    for name in ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"]:
+        tag = soup.find("input", {"name": name})
+        data[name] = tag["value"] if tag else ""
+    return data
+
+# -------------------------
+# POST
+# -------------------------
+def do_post(soup, extra):
+    data = get_hidden(soup)
+    data.update(extra)
+    r = session.post(BASE_URL, data=data)
+    return BeautifulSoup(r.text, "html.parser")
+
+# -------------------------
+# ボタン（nameで押す）
+# -------------------------
+def click_button(soup, name):
+    return do_post(soup, {name: ""})
+
+# -------------------------
 # 解析
-# =========================
+# -------------------------
 def extract_gym(text):
     if "体育館" not in text:
         return ""
@@ -50,128 +77,99 @@ def parse(text):
 
     return results
 
-def analyze(text, results, label):
-    if "不正な遷移" in text:
-        log(f"{label}: ❌ エラー")
-        return "error"
+# -------------------------
+# カレンダー開く
+# -------------------------
+def open_calendar(soup):
+    log("📅 カレンダー開く")
+    return do_post(soup, {
+        "__EVENTTARGET": "ucTermSetting$btnCalendar",
+        "__EVENTARGUMENT": ""
+    })
 
-    if not results:
-        log(f"{label}: 🟡 空きなし")
-        return "empty"
-
-    log(f"{label}: 🟢 {results}")
-    return "ok"
-
-# =========================
-# 月取得チェック
-# =========================
-def get_month_signature(text):
-    # 「4/1」などを拾う
-    m = re.search(r"(\\d{1,2})/1", text)
-    return m.group(1) if m else "?"
-
-# =========================
-# 日付選択（検証付き）
-# =========================
-def select_date(page, year, month, day):
-    log(f"📅 {year}/{month}/{day} を選択")
+# -------------------------
+# 日付選択（核心）
+# -------------------------
+def select_date(soup, year, month, day):
+    log(f"📅 {year}/{month}/{day}")
 
     # カレンダー開く
-    page.locator("input[name='ucTermSetting$btnCalendar']").click()
-    page.wait_for_selector("div.ajax__calendar_day")
+    soup = open_calendar(soup)
 
-    target = f"{year}年{month}月{day}日"
+    # ▼ここがポイント
+    # 実際のターゲットは day_x_y のIDになるが、
+    # ASP.NETは内部的に以下形式で受ける
+    target = f"ucTermSetting$ceCalendar$day"
 
-    # クリック（強制）
-    page.locator(f"div[title='{target}']").click(force=True)
+    # 実装差があるので argumentで日付を送る
+    argument = f"{year}/{month}/{day}"
 
-    # 更新待ち
-    page.wait_for_timeout(2000)
+    soup = do_post(soup, {
+        "__EVENTTARGET": target,
+        "__EVENTARGUMENT": argument
+    })
 
-    # ★確認用ログ
-    body = page.inner_text("body")
-    sig = get_month_signature(body)
-    log(f"📊 月シグネチャ: {sig}")
+    return soup
 
-    return body
-
-# =========================
+# -------------------------
 # メイン
-# =========================
+# -------------------------
 def run_check():
-    with sync_playwright() as p:
-        log(f"🚀 Playwright {VERSION}")
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    log(f"🚀 HTTP {VERSION}")
 
-        try:
-            # 入口
-            page.goto(BASE_URL)
-            page.wait_for_url("**Wg_ModeSelect.aspx**")
+    # 入口
+    soup = BeautifulSoup(session.get(BASE_URL).text, "html.parser")
 
-            # 遷移
-            page.locator("input[value='公共施設予約メニュー']").click()
-            page.wait_for_selector("input[value^='1. 空き照会']")
+    # -------------------------
+    # 遷移
+    # -------------------------
+    soup = click_button(soup, "rbtnYoyaku")
+    soup = click_button(soup, "rbtnYoyaku")  # 空き照会
 
-            page.locator("input[value^='1. 空き照会']").click()
-            page.wait_for_selector("input[value='次頁']")
+    soup = click_button(soup, "btnNext")  # 次頁（環境で違う可能性あり）
+    soup = click_button(soup, "btnShisetsu")  # 柳北
 
-            page.locator("input[value='次頁']").click()
-            page.wait_for_selector("input[value='柳北スポーツプラザ']")
+    # -------------------------
+    # 表示設定
+    # -------------------------
+    soup = click_button(soup, "ucPCFooter$btnForward")
 
-            page.locator("input[value='柳北スポーツプラザ']").click()
-            page.wait_for_selector("input[name='ucPCFooter$btnForward']")
+    soup = do_post(soup, {
+        "rbCalendar": "カレンダー",
+        "rbtnMonth": "1ヶ月"
+    })
 
-            # 表示設定
-            page.locator("input[name='ucPCFooter$btnForward']").click()
-            page.wait_for_selector("input[name='rbCalendar']")
+    soup = click_button(soup, "ucPCFooter$btnForward")
 
-            page.locator("input[name='rbCalendar'][value='カレンダー']").click()
-            page.locator("input[name='rbtnMonth'][value='1ヶ月']").click()
+    # -------------------------
+    # 4月
+    # -------------------------
+    soup_apr = select_date(soup, 2026, 4, 1)
+    text_apr = soup_apr.get_text()
+    res_apr = parse(extract_gym(text_apr))
+    log(f"4月: {res_apr}")
 
-            page.locator("input[name='ucPCFooter$btnForward']").click()
-            page.wait_for_selector("text=体育館")
+    # -------------------------
+    # 5月
+    # -------------------------
+    soup_may = select_date(soup, 2026, 5, 1)
+    text_may = soup_may.get_text()
+    res_may = parse(extract_gym(text_may))
+    log(f"5月: {res_may}")
 
-            # =========================
-            # 4月
-            # =========================
-            body_apr = select_date(page, 2026, 4, 1)
-            res_apr = parse(extract_gym(body_apr))
-            analyze(body_apr, res_apr, "4月")
+    # -------------------------
+    # 結果
+    # -------------------------
+    final = sorted(set(res_apr + res_may))
+    log(f"📦 FINAL: {final}")
 
-            # =========================
-            # 5月
-            # =========================
-            body_may = select_date(page, 2026, 5, 1)
-            res_may = parse(extract_gym(body_may))
-            analyze(body_may, res_may, "5月")
+    if final:
+        msg = "@everyone\n🏸 柳北スポーツプラザ\n"
+        msg += "\n".join(final)
+    else:
+        msg = "🏸 空きなし"
 
-            # =========================
-            # 検証
-            # =========================
-            if body_apr == body_may:
-                log("❌ 同一ページ（カレンダー未反映）")
-
-            # =========================
-            # 結果
-            # =========================
-            final = sorted(set(res_apr + res_may))
-            log(f"📦 FINAL: {final}")
-
-            if final:
-                msg = "@everyone\n🏸 柳北スポーツプラザ\n"
-                msg += "\n".join(final)
-            else:
-                msg = "🏸 空きなし"
-
-            send_discord(msg)
-
-        except Exception as e:
-            log(f"🔥 エラー: {e}")
-
-        finally:
-            browser.close()
-            log("🔒 終了")
+    send_discord(msg)
 
 if __name__ == "__main__":
     run_check()
