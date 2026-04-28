@@ -1,19 +1,18 @@
-import requests
-from bs4 import BeautifulSoup
 import os
 import re
 import datetime
+import requests
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-VERSION = "v6.1"
-
-BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
-session = requests.Session()
+URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
+
 
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
+
 
 def send_discord(msg):
     if not WEBHOOK_URL:
@@ -21,90 +20,9 @@ def send_discord(msg):
         return
     requests.post(WEBHOOK_URL, json={"content": msg})
 
-# =========================
-# hidden取得
-# =========================
-def get_hidden(soup):
-    data = {}
-    for k in ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"]:
-        tag = soup.find("input", {"name": k})
-        data[k] = tag["value"] if tag else ""
-    return data
 
 # =========================
-# POST
-# =========================
-def post(soup, extra):
-    data = get_hidden(soup)
-    data.update(extra)
-    r = session.post(BASE_URL, data=data)
-    return BeautifulSoup(r.text, "html.parser")
-
-# =========================
-# ボタン
-# =========================
-def click(soup, name):
-    return post(soup, {name: ""})
-
-# =========================
-# カレンダー開く
-# =========================
-def open_calendar(soup):
-    log("📅 カレンダー開く")
-    return post(soup, {
-        "__EVENTTARGET": "ucTermSetting$btnCalendar",
-        "__EVENTARGUMENT": ""
-    })
-
-# =========================
-# EVENT完全抽出（ここが核心）
-# =========================
-def extract_event_map(soup):
-    html = str(soup)
-
-    # EVENT一覧
-    events = re.findall(r"__doPostBack\('([^']+)'", html)
-
-    # 日付一覧（表示順）
-    days = []
-    for div in soup.find_all("div"):
-        title = div.get("title", "")
-        if re.match(r"\d{4}年\d{1,2}月\d{1,2}日", title):
-            days.append(title)
-
-    # 安全マッピング（順序一致前提）
-    mapping = {}
-    for i in range(min(len(days), len(events))):
-        mapping[days[i]] = events[i]
-
-    log(f"📊 EVENT数: {len(events)} / 日付数: {len(days)}")
-    return mapping
-
-# =========================
-# 日付選択
-# =========================
-def select_date(soup, y, m, d):
-    target = f"{y}年{m}月{d}日"
-    log(f"📅 {target}")
-
-    soup = open_calendar(soup)
-
-    mapping = extract_event_map(soup)
-
-    if target not in mapping:
-        log(f"❌ 日付未検出: {target}")
-        return soup
-
-    event = mapping[target]
-    log(f"➡ EVENTTARGET: {event}")
-
-    return post(soup, {
-        "__EVENTTARGET": event,
-        "__EVENTARGUMENT": ""
-    })
-
-# =========================
-# 解析
+# 解析（そのまま維持）
 # =========================
 def extract_gym(text):
     if "体育館" not in text:
@@ -114,10 +32,11 @@ def extract_gym(text):
         part = part.split("庭球場", 1)[0]
     return part
 
+
 def parse(text):
     text = re.sub(r"\s+", " ", text)
-    res = []
-    cur = None
+    results = []
+    current_month = None
     tokens = text.split()
 
     for i in range(len(tokens) - 1):
@@ -125,65 +44,130 @@ def parse(text):
         n = tokens[i + 1]
 
         if t.isdigit() and 1 <= int(t) <= 12:
-            cur = t
+            current_month = t
             continue
 
         if t.isdigit() and n in ["○", "△"]:
-            if cur:
-                res.append(f"{cur}/{t} {n}")
+            if current_month:
+                results.append(f"{current_month}/{t} {n}")
 
-    return res
+    return results
+
+
+def analyze(text, results, label):
+    if "不正な遷移" in text or "エラー" in text:
+        log(f"{label}: ❌ エラー")
+        return "error"
+
+    if not results:
+        log(f"{label}: 🟡 空きなし")
+        return "empty"
+
+    log(f"{label}: 🟢 {results}")
+    return "ok"
+
+
+# =========================
+# 安定クリック（コア改善）
+# =========================
+def safe_click(page, selector, label, timeout=8000):
+    try:
+        log(f"➡ {label}")
+
+        el = page.locator(selector).first
+
+        # 表示待ちではなく「存在＋有効化」待ち
+        el.wait_for(state="attached", timeout=timeout)
+        el.click(timeout=timeout)
+
+        page.wait_for_timeout(800)  # 遷移安定化用バッファ
+
+    except PWTimeout:
+        raise Exception(f"クリック失敗: {label}")
+
+
+# =========================
+# JS直叩き（安定化）
+# =========================
+def js_postback(page, target):
+    log(f"JS POSTBACK: {target}")
+    page.evaluate(f"__doPostBack('{target}','')")
+    page.wait_for_timeout(1200)
+
 
 # =========================
 # メイン
 # =========================
 def run_check():
-    log(f"🚀 HTTP {VERSION}")
+    log("🚀 Playwright v7.0 安定版")
 
-    soup = BeautifulSoup(session.get(BASE_URL).text, "html.parser")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
 
-    # 遷移（必要最小限）
-    soup = click(soup, "rbtnYoyaku")
-    soup = click(soup, "rbtnYoyaku")
+        page = browser.new_page()
 
-    soup = click(soup, "btnNext")
-    soup = click(soup, "btnShisetsu")
+        try:
+            log(f"🌐 アクセス: {URL}")
+            page.goto(URL, wait_until="domcontentloaded")
 
-    soup = click(soup, "ucPCFooter$btnForward")
+            # =========================
+            # メニュー遷移（テキスト依存排除）
+            # =========================
+            safe_click(page, "input[name='rbtnYoyaku']", "空き照会メニュー")
+            safe_click(page, "input[value='次頁']", "次頁")
+            safe_click(page, "input[value='柳北スポーツプラザ']", "施設選択")
 
-    soup = post(soup, {
-        "rbCalendar": "カレンダー",
-        "rbtnMonth": "1ヶ月"
-    })
+            safe_click(page, "input[name='ucPCFooter$btnForward']", "進む")
 
-    soup = click(soup, "ucPCFooter$btnForward")
+            # =========================
+            # カレンダー設定
+            # =========================
+            safe_click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
+            safe_click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
 
-    # =========================
-    # 4月
-    # =========================
-    soup_apr = select_date(soup, 2026, 4, 1)
-    res_apr = parse(extract_gym(soup_apr.get_text()))
-    log(f"4月: {res_apr}")
+            safe_click(page, "input[name='ucPCFooter$btnForward']", "確定")
 
-    # =========================
-    # 5月
-    # =========================
-    soup_may = select_date(soup, 2026, 5, 1)
-    res_may = parse(extract_gym(soup_may.get_text()))
-    log(f"5月: {res_may}")
+            page.wait_for_timeout(1200)
 
-    # =========================
-    # 結果
-    # =========================
-    final = sorted(set(res_apr + res_may))
-    log(f"📦 FINAL: {final}")
+            # =========================
+            # 1ページ
+            # =========================
+            log("📑 1ページ")
+            body1 = page.inner_text("body")
+            res1 = parse(extract_gym(body1))
+            analyze(body1, res1, "1ページ")
 
-    if final:
-        msg = "@everyone\n🏸 柳北スポーツプラザ\n" + "\n".join(final)
-    else:
-        msg = "🏸 空きなし"
+            # =========================
+            # 次ページ（JS安定版）
+            # =========================
+            js_postback(page, "btnNextPeriod")
 
-    send_discord(msg)
+            log("📑 2ページ")
+            body2 = page.inner_text("body")
+            res2 = parse(extract_gym(body2))
+            analyze(body2, res2, "2ページ")
+
+            # =========================
+            # 結果
+            # =========================
+            final = sorted(set(res1 + res2))
+            log(f"📦 FINAL: {final}")
+
+            send_discord(
+                "@everyone\n🏸 柳北スポーツプラザ\n" +
+                ("\n".join(final) if final else "空きなし")
+            )
+
+        except Exception as e:
+            log(f"🔥 エラー: {e}")
+
+        finally:
+            log("🔒 終了")
+            browser.close()
+
 
 if __name__ == "__main__":
     run_check()
