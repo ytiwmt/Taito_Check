@@ -1,99 +1,82 @@
 import os
 import re
 import time
-import requests
 import datetime
-from playwright.sync_api import sync_playwright
+import requests
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-VERSION = "v5-stable-state-machine"
+VERSION = "stable-v1"
 
 WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
 
-BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
+URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
-# =========================
-# util
-# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
 
 
-def send_discord(msg):
+def send(msg):
     if not WEBHOOK_URL_Taito:
-        log("WEBHOOKなし")
+        log("Webhookなし")
         return
     requests.post(WEBHOOK_URL_Taito, json={"content": msg})
 
 
-# =========================
-# 状態解析（ここが本体）
-# =========================
-def parse_koma(page):
-    cells = page.locator("a[id*='lnkKoma']")
-    count = cells.count()
+# -------------------------
+# 重要：リンクから抽出
+# -------------------------
+def extract_slots(page):
+    results = []
 
-    if count == 0:
-        return {
-            "status": "PARSE_FAILED",
-            "available": [],
-            "empty": [],
-            "raw": []
-        }
+    links = page.locator("a")
+    count = links.count()
 
-    texts = cells.all_text_contents()
+    for i in range(count):
+        try:
+            text = links.nth(i).inner_text().strip()
 
-    available = []
-    empty = []
-    unknown = []
+            # 例: 11選択△ / 28× / 14○
+            m = re.search(r'(\d{1,2}).*(○|△|×)', text)
+            if m:
+                results.append(f"{m.group(1)}{m.group(2)}")
 
-    for t in texts:
-        t = t.replace("\xa0", "").strip()
-
-        if t == "":
+        except:
             continue
 
-        if "○" in t or "△" in t:
-            available.append(t)
-        elif "×" in t:
-            empty.append(t)
-        else:
-            unknown.append(t)
-
-    # 判定
-    if available:
-        status = "AVAILABLE"
-    elif empty and not available:
-        status = "EMPTY_CONFIRMED"
-    elif unknown:
-        status = "UNKNOWN_FORMAT"
-    else:
-        status = "EMPTY_CONFIRMED"
-
-    return {
-        "status": status,
-        "available": available,
-        "empty": empty,
-        "raw": texts
-    }
+    return results
 
 
-# =========================
-# 安定クリック
-# =========================
-def safe_click(page, selector, label):
+def classify(results):
+    if results is None:
+        return "PARSE_FAILED"
+
+    if len(results) == 0:
+        return "PARSE_FAILED"
+
+    ok = [r for r in results if "○" in r or "△" in r]
+    ng = [r for r in results if "×" in r]
+
+    if ok:
+        return "AVAILABLE"
+
+    if ng and not ok:
+        return "EMPTY_OK"
+
+    return "PARSE_FAILED"
+
+
+# -------------------------
+# Ajax待機（重要）
+# -------------------------
+def wait_update(page):
     try:
-        page.locator(selector).first.click()
-        log(f"➡ {label}")
-        page.wait_for_timeout(800)
-    except Exception as e:
-        log(f"🔥 click失敗 {label}: {e}")
+        page.wait_for_timeout(1200)  # このサイトはこれが一番安定
+    except:
+        pass
 
 
-# =========================
-# メイン
-# =========================
 def run():
     with sync_playwright() as p:
         log(f"🚀 Playwright {VERSION}")
@@ -102,71 +85,76 @@ def run():
         page = browser.new_page()
 
         try:
-            log(f"🔗 {BASE_URL}")
-            page.goto(BASE_URL, timeout=30000)
+            log(f"🔗 {URL}")
+            page.goto(URL)
 
-            # 初期遷移（最低限）
-            safe_click(page, "input[value='公共施設予約メニュー']", "公共施設予約メニュー")
-            safe_click(page, "input[value^='1. 空き照会']", "空き照会")
-            safe_click(page, "input[value='次頁']", "次頁")
+            page.wait_for_url("**Wg_ModeSelect.aspx**")
 
-            # 施設選択（固定）
-            safe_click(page, "input[value='柳北スポーツプラザ']", "施設")
-            safe_click(page, "input[name='ucPCFooter$btnForward']", "進む")
+            # -------------------------
+            # 画面遷移
+            # -------------------------
+            page.click("input[value='公共施設予約メニュー']")
+            page.click("input[value^='1. 空き照会']")
+            page.click("input[value='次頁']")
+            page.click("input[value='柳北スポーツプラザ']")
 
-            # カレンダー
-            safe_click(page, "input[name='rbCalendar'][value='カレンダー']", "カレンダー")
-            safe_click(page, "input[name='rbtnMonth'][value='1ヶ月']", "1ヶ月")
-            safe_click(page, "input[name='ucPCFooter$btnForward']", "確定")
+            page.click("input[name='ucPCFooter$btnForward']")
 
-            page.wait_for_timeout(1500)
+            page.click("input[name='rbCalendar'][value='カレンダー']")
+            page.click("input[name='rbtnMonth'][value='1ヶ月']")
+            page.click("input[name='ucPCFooter$btnForward']")
 
-            # =========================
-            # 1ページ
-            # =========================
+            wait_update(page)
+
+            # -------------------------
+            # 1ページ目
+            # -------------------------
             log("📑 1ページ目")
-            r1 = parse_koma(page)
+            res1 = extract_slots(page)
+            log(f"1ページ: {res1}")
 
-            log(f"1ページ: {r1['status']} / ○△={len(r1['available'])} / ×={len(r1['empty'])}")
+            status1 = classify(res1)
+            log(f"1ページ STATUS: {status1}")
 
-            # =========================
+            # -------------------------
             # 次ページ
-            # =========================
+            # -------------------------
             log("⏭️ 次の期間")
-            try:
-                page.locator("#btnNextPeriod").click()
-            except:
-                page.evaluate("__doPostBack('btnNextPeriod','')")
 
-            page.wait_for_timeout(2000)
+            page.evaluate("""
+                document.getElementById('btnNextPeriod').click()
+            """)
 
-            # =========================
-            # 2ページ
-            # =========================
+            # Ajax待ち（ここ超重要）
+            wait_update(page)
+
+            # -------------------------
+            # 2ページ目
+            # -------------------------
             log("📑 2ページ目")
-            r2 = parse_koma(page)
 
-            log(f"2ページ: {r2['status']} / ○△={len(r2['available'])} / ×={len(r2['empty'])}")
+            res2 = extract_slots(page)
+            log(f"2ページ: {res2}")
 
-            # =========================
-            # 結果統合
-            # =========================
-            all_ok = r1["available"] + r2["available"]
+            status2 = classify(res2)
+            log(f"2ページ STATUS: {status2}")
 
-            if all_ok:
-                msg = "@everyone\n🏸 空きあり\n"
-                msg += "\n".join(all_ok)
+            # -------------------------
+            # 結果
+            # -------------------------
+            final = sorted(set(res1 + res2))
+
+            log(f"📦 FINAL: {final}")
+
+            if final:
+                send("🏸 空きあり\n" + "\n".join(final))
             else:
-                if r1["status"] == "PARSE_FAILED" or r2["status"] == "PARSE_FAILED":
-                    msg = "⚠️ 取得失敗（ページ構造変化の可能性）"
-                else:
-                    msg = "🏸 空きなし（正常判定）"
-
-            log(f"📦 FINAL: {all_ok}")
-            send_discord(msg)
+                send("空きなし")
 
         except Exception as e:
             log(f"🔥 ERROR: {e}")
+            import traceback
+            traceback.print_exc()
 
         finally:
             log("🔒 END")
