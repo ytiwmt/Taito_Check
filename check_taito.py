@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v5.0"
+VERSION = "v6.0"
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
@@ -41,9 +41,9 @@ def do_post(soup, extra):
     return BeautifulSoup(r.text, "html.parser")
 
 # -------------------------
-# ボタン（nameで押す）
+# ボタン押し（nameベース）
 # -------------------------
-def click_button(soup, name):
+def click_by_name(soup, name):
     return do_post(soup, {name: ""})
 
 # -------------------------
@@ -88,25 +88,47 @@ def open_calendar(soup):
     })
 
 # -------------------------
-# 日付選択（核心）
+# EVENTTARGET抽出（核心）
+# -------------------------
+def extract_calendar_targets(soup):
+    targets = {}
+
+    for a in soup.find_all("a"):
+        href = a.get("href", "")
+        title = a.get("title", "")
+
+        if "__doPostBack" in href and "年" in title:
+            m = re.search(r"__doPostBack\('([^']+)'", href)
+            if m:
+                event = m.group(1)
+                targets[title] = event
+
+    return targets
+
+# -------------------------
+# 日付選択（完全自動）
 # -------------------------
 def select_date(soup, year, month, day):
-    log(f"📅 {year}/{month}/{day}")
+    target_title = f"{year}年{month}月{day}日"
+    log(f"📅 {target_title}")
 
     # カレンダー開く
     soup = open_calendar(soup)
 
-    # ▼ここがポイント
-    # 実際のターゲットは day_x_y のIDになるが、
-    # ASP.NETは内部的に以下形式で受ける
-    target = f"ucTermSetting$ceCalendar$day"
+    # EVENT一覧取得
+    targets = extract_calendar_targets(soup)
 
-    # 実装差があるので argumentで日付を送る
-    argument = f"{year}/{month}/{day}"
+    if target_title not in targets:
+        log(f"❌ ターゲットなし: {target_title}")
+        return soup
 
+    event = targets[target_title]
+    log(f"➡ EVENTTARGET: {event}")
+
+    # POST
     soup = do_post(soup, {
-        "__EVENTTARGET": target,
-        "__EVENTARGUMENT": argument
+        "__EVENTTARGET": event,
+        "__EVENTARGUMENT": ""
     })
 
     return soup
@@ -117,44 +139,38 @@ def select_date(soup, year, month, day):
 def run_check():
     log(f"🚀 HTTP {VERSION}")
 
-    # 入口
     soup = BeautifulSoup(session.get(BASE_URL).text, "html.parser")
 
     # -------------------------
-    # 遷移
+    # 遷移（ここは環境依存なので調整前提）
     # -------------------------
-    soup = click_button(soup, "rbtnYoyaku")
-    soup = click_button(soup, "rbtnYoyaku")  # 空き照会
+    soup = click_by_name(soup, "rbtnYoyaku")
+    soup = click_by_name(soup, "rbtnYoyaku")
 
-    soup = click_button(soup, "btnNext")  # 次頁（環境で違う可能性あり）
-    soup = click_button(soup, "btnShisetsu")  # 柳北
+    soup = click_by_name(soup, "btnNext")
+    soup = click_by_name(soup, "btnShisetsu")
 
-    # -------------------------
-    # 表示設定
-    # -------------------------
-    soup = click_button(soup, "ucPCFooter$btnForward")
+    soup = click_by_name(soup, "ucPCFooter$btnForward")
 
     soup = do_post(soup, {
         "rbCalendar": "カレンダー",
         "rbtnMonth": "1ヶ月"
     })
 
-    soup = click_button(soup, "ucPCFooter$btnForward")
+    soup = click_by_name(soup, "ucPCFooter$btnForward")
 
     # -------------------------
     # 4月
     # -------------------------
     soup_apr = select_date(soup, 2026, 4, 1)
-    text_apr = soup_apr.get_text()
-    res_apr = parse(extract_gym(text_apr))
+    res_apr = parse(extract_gym(soup_apr.get_text()))
     log(f"4月: {res_apr}")
 
     # -------------------------
     # 5月
     # -------------------------
     soup_may = select_date(soup, 2026, 5, 1)
-    text_may = soup_may.get_text()
-    res_may = parse(extract_gym(text_may))
+    res_may = parse(extract_gym(soup_may.get_text()))
     log(f"5月: {res_may}")
 
     # -------------------------
