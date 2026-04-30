@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.5-dual-parse-final"
+VERSION = "v6.6-koma-only-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -21,32 +21,21 @@ def send(msg):
 
 
 # =========================
-# 完全パース（hidden + fallback）
+# KOMA専用パース（最重要）
 # =========================
-def parse_all(page):
+def parse_koma(page):
+    elems = page.locator("input[name*='lnkKoma']").all()
+
     results = []
-
-    # --- ① hidden ---
-    elems = page.locator("input[name^='h_dlRepeat2']").all()
-
     for e in elems:
         txt = e.get_attribute("value") or ""
         txt = txt.replace("&nbsp;", "").strip()
 
-        m = re.search(r"(\d+).*(○|△|×)", txt)
+        m = re.search(r"(\d+)\s*(○|△|×)", txt)
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
-    if results:
-        return results
-
-    # --- ② fallback（×ページ対応） ---
-    log("⚠️ hidden空 → DOM解析fallback")
-
-    text = page.inner_text("body")
-    matches = re.findall(r"(\d+)\s*(○|△|×)", text)
-
-    return [f"{d}{s}" for d, s in matches]
+    return results
 
 
 # =========================
@@ -69,37 +58,41 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ遷移
+# 次ページ遷移（PostBack安定版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
     target = page.evaluate("""
         () => {
-            const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
+            const inputs = Array.from(document.querySelectorAll("input[name*='lnkNextSpan']"));
             for (const el of inputs) {
-                if (el.name.includes("Migrated_lnkNextSpan")) {
-                    return el.name.replace("h_", "");
-                }
+                return el.name.replace("h_", "");
             }
             return null;
         }
     """)
 
     if not target:
-        raise Exception("NextSpan target not found")
+        log("⚠️ 次ページなし")
+        return False
 
     log(f"➡ POSTBACK TARGET: {target}")
 
-    page.evaluate(f"__doPostBack('{target}','')")
-
-    # --- 更新待ち（柔軟）
     try:
-        page.wait_for_load_state("networkidle", timeout=5000)
-    except:
-        pass
+        with page.expect_response(
+            lambda r: "Wg_ShisetsubetsuAkiJoukyou" in r.url,
+            timeout=8000
+        ):
+            page.evaluate(f"__doPostBack('{target}','')")
 
-    page.wait_for_timeout(1000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(500)
+        return True
+
+    except:
+        log("⚠️ 次ページ遷移失敗")
+        return False
 
 
 # =========================
@@ -111,6 +104,8 @@ def run():
 
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+
+        final = []
 
         try:
             # --- 初期遷移 ---
@@ -129,43 +124,48 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ
+            # 1ページ目
             # =========================
             log("📑 1ページ目")
 
-            res1 = parse_all(page)
+            res1 = parse_koma(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
 
-            # =========================
-            # 2ページ
-            # =========================
-            try:
-                go_next(page)
+            final += res1
 
+            # =========================
+            # 2ページ目（失敗しても続行）
+            # =========================
+            if go_next(page):
                 log("📑 2ページ目")
 
-                res2 = parse_all(page)
+                res2 = parse_koma(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-            except Exception as e:
-                log(f"⚠️ 2ページ取得失敗: {e}")
-                res2 = []
+                final += res2
+            else:
+                log("⚠️ 2ページ目スキップ")
 
             # =========================
             # 集約
             # =========================
-            final = sorted(set(res1 + res2))
+            final = sorted(set(final))
             log(f"📦 FINAL: {final}")
 
             # =========================
-            # 通知（Ver付き）
+            # 通知（必ず送る）
             # =========================
             if any("○" in x or "△" in x for x in final):
-                msg = f"@everyone\n🏸 空きあり ({VERSION})\n" + "\n".join(final)
+                msg = (
+                    f"@everyone\n"
+                    f"🏸 空きあり\n"
+                    f"Ver: {VERSION}\n"
+                    + "\n".join(final)
+                )
             else:
-                msg = f"🏸 空きなし ({VERSION})"
+                msg = f"🏸 空きなし\nVer: {VERSION}"
 
             send(msg)
 
@@ -174,8 +174,8 @@ def run():
             import traceback
             traceback.print_exc()
 
-            # --- 最低限通知（落ちても送る） ---
-            send(f"⚠️ ERROR ({VERSION})\n{e}")
+            # エラーでも通知
+            send(f"⚠️ ERROR\nVer: {VERSION}\n{e}")
 
         finally:
             log("🔒 END")
