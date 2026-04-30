@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.3-a-tag-final"
+VERSION = "v7.4-wait-fix-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -27,7 +27,7 @@ def send(msg):
 def parse(page):
     results = []
 
-    # --- 最優先：aタグ ---
+    # --- aタグ優先 ---
     links = page.locator("a[id*='lnkKoma']").all()
 
     for l in links:
@@ -41,7 +41,7 @@ def parse(page):
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
-    # --- fallback（hidden） ---
+    # --- fallback ---
     if not results:
         log("⚠️ aタグ取得失敗 → hidden fallback")
 
@@ -75,7 +75,7 @@ def analyze(results, label):
     return "EMPTY"
 
 # =========================
-# 次ページ遷移（確実版）
+# 次ページ遷移（修正版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
@@ -98,13 +98,13 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★ aタグの変化で検知
+        # ★ ここが修正ポイント（arg=）
         page.wait_for_function(
             """(args) => {
                 const count = document.querySelectorAll("a[id*='lnkKoma']").length;
                 return count > 0 && count !== args.before;
             }""",
-            {"before": before},
+            arg={"before": before},
             timeout=10000
         )
 
@@ -130,7 +130,7 @@ def run():
         final = []
 
         try:
-            # --- ナビゲーション ---
+            # --- ナビ ---
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -145,39 +145,30 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # =========================
-            # 1ページ
-            # =========================
+            # ===== 1P =====
             log("📑 1ページ目")
-
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
-
             final.extend(res1)
 
-            # =========================
-            # 2ページ
-            # =========================
+            # ===== 2P =====
             moved = go_next(page)
 
             if moved:
                 log("📑 2ページ目")
-
                 res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-                if set(res1) == set(res2):
-                    log("⚠️ 同一データ → 遷移失敗")
-                else:
+                if set(res1) != set(res2):
                     final.extend(res2)
+                else:
+                    log("⚠️ 同一データ → 遷移失敗")
             else:
                 log("⚠️ 2ページ取得失敗")
 
-            # =========================
-            # 集約
-            # =========================
+            # ===== 集約 =====
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -185,9 +176,7 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # =========================
-            # 通知
-            # =========================
+            # ===== 通知 =====
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
@@ -207,7 +196,6 @@ def run():
             log(f"🔥 ERROR: {e}")
             import traceback
             traceback.print_exc()
-
             send(f"⚠️ エラー [{VERSION}]\n{e}")
 
         finally:
