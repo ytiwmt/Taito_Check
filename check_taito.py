@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.7-koma-wait-stable"
+VERSION = "v6.8-page-detect-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -21,7 +21,7 @@ def send(msg):
 
 
 # =========================
-# KOMAパース（唯一の真）
+# KOMAパース（存在するものだけ取る）
 # =========================
 def parse_koma(page):
     elems = page.locator("input[name*='lnkKoma']").all()
@@ -39,7 +39,7 @@ def parse_koma(page):
 
 
 # =========================
-# 状態判定
+# 状態判定（空配列も正常扱い）
 # =========================
 def analyze(results, label):
     maru = [r for r in results if "○" in r or "△" in r]
@@ -53,15 +53,18 @@ def analyze(results, label):
         log(f"{label}: FULL / ×={len(batsu)}")
         return "FULL"
 
-    log(f"{label}: PARSE_FAILED")
-    return "PARSE_FAILED"
+    # ★ここが重要（2ページ目対策）
+    log(f"{label}: FULL (データなし)")
+    return "FULL"
 
 
 # =========================
-# 次ページ遷移（KOMA出現待ち）
+# 次ページ遷移（ページ変化検知）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
+
+    before = page.content()
 
     target = page.evaluate("""
         () => {
@@ -80,19 +83,20 @@ def go_next(page):
     log(f"➡ POSTBACK TARGET: {target}")
 
     try:
-        # PostBack実行
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★ここが核心：KOMAが出るまで待つ
-        page.wait_for_function("""
-            () => document.querySelectorAll("input[name*='lnkKoma']").length > 0
-        """, timeout=10000)
+        # ★DOM変化ベースで待つ（KOMA依存しない）
+        page.wait_for_function(
+            """(prev) => document.body.innerHTML !== prev""",
+            before,
+            timeout=10000
+        )
 
-        log("✅ KOMA検知（描画完了）")
+        log("✅ ページ変化検知")
         return True
 
     except:
-        log("⚠️ 次ページ遷移失敗")
+        log("⚠️ ページ変化検知失敗")
         return False
 
 
@@ -122,10 +126,7 @@ def run():
             page.locator("input[value='1ヶ月']").click()
             page.locator("input[name='ucPCFooter$btnForward']").click()
 
-            # ★初回もKOMA待ち（安定化）
-            page.wait_for_function("""
-                () => document.querySelectorAll("input[name*='lnkKoma']").length > 0
-            """, timeout=10000)
+            page.wait_for_load_state("networkidle")
 
             # =========================
             # 1ページ目
