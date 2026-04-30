@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.11-network-stable"
+VERSION = "v7.12-dom-polling-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -54,14 +54,22 @@ def analyze(results, label):
 
 
 # =========================
-# ★遷移待ち（最終版）
+# ★遷移待ち（最終安定版）
 # =========================
 def wait_postback(page):
-    # 1. ネットワーク完了を待つ（最重要）
-    page.wait_for_load_state("networkidle")
+    # DOMのvisible / selector待ちを完全に捨てる
 
-    # 2. 念のため短い固定待機（ASP.NET対策）
-    page.wait_for_timeout(800)
+    page.wait_for_function("""
+        () => {
+            const els = document.querySelectorAll("a[id*='lnkKoma']");
+            if (!els || els.length === 0) return false;
+
+            const txt = els[0].innerText;
+            return typeof txt === 'string' && txt.length > 0;
+        }
+    """, timeout=20000)
+
+    page.wait_for_timeout(500)
 
 
 # =========================
@@ -87,9 +95,6 @@ def go_next(page):
         page.evaluate(f"__doPostBack('{target}','')")
 
         wait_postback(page)
-
-        # 追加安定チェック（最低限存在確認）
-        page.wait_for_selector("a[id*='lnkKoma']", timeout=15000)
 
         log("✅ 2ページ描画完了")
         return True
