@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.2-render-wait-final"
+VERSION = "v7.3-a-tag-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -22,54 +22,39 @@ def send(msg):
             log(f"❌ Webhook送信失敗: {e}")
 
 # =========================
-# hidden解析
+# 解析（aタグ主体）
 # =========================
-def parse_hidden(page):
-    elems = page.locator("input[name*='lnkKoma']").all()
+def parse(page):
     results = []
 
-    for e in elems:
-        txt = e.get_attribute("value") or ""
-        txt = txt.replace("&nbsp;", "").strip()
+    # --- 最優先：aタグ ---
+    links = page.locator("a[id*='lnkKoma']").all()
 
-        m = re.search(r"(\d+)\s*(○|△|×)", txt)
-        if m:
-            results.append(f"{m.group(1)}{m.group(2)}")
-
-    return results
-
-# =========================
-# DOM解析（強化版）
-# =========================
-def parse_dom(page):
-    results = []
-
-    cells = page.locator("td").all()
-
-    for c in cells:
+    for l in links:
         try:
-            txt = c.inner_text()
-            txt = txt.replace("\n", "").replace(" ", "").strip()
+            txt = l.inner_text()
+            txt = txt.replace("\xa0", "").replace(" ", "").strip()
         except:
             continue
 
-        m = re.search(r"(\d+).*?(○|△|×)", txt)
+        m = re.search(r"(\d+)(○|△|×)", txt)
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
+    # --- fallback（hidden） ---
+    if not results:
+        log("⚠️ aタグ取得失敗 → hidden fallback")
+
+        elems = page.locator("input[name*='lnkKoma']").all()
+        for e in elems:
+            txt = e.get_attribute("value") or ""
+            txt = txt.replace("&nbsp;", "").strip()
+
+            m = re.search(r"(\d+)\s*(○|△|×)", txt)
+            if m:
+                results.append(f"{m.group(1)}{m.group(2)}")
+
     return results
-
-# =========================
-# 統合
-# =========================
-def parse(page):
-    res = parse_hidden(page)
-
-    if not res:
-        log("⚠️ hiddenなし → DOM解析へ")
-        res = parse_dom(page)
-
-    return res
 
 # =========================
 # 状態判定
@@ -90,13 +75,12 @@ def analyze(results, label):
     return "EMPTY"
 
 # =========================
-# 次ページ（完全版）
+# 次ページ遷移（確実版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    # 現在のテーブル状態を記録
-    before_count = page.locator("td").count()
+    before = page.locator("a[id*='lnkKoma']").count()
 
     target = page.evaluate("""
         () => {
@@ -114,15 +98,17 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★DOM変化待機（これが核心）
+        # ★ aタグの変化で検知
         page.wait_for_function(
-            """(before) => {
-                const tds = document.querySelectorAll("td").length;
-                return tds > 20 && tds !== before;
+            """(args) => {
+                const count = document.querySelectorAll("a[id*='lnkKoma']").length;
+                return count > 0 && count !== args.before;
             }""",
-            before_count,
+            {"before": before},
             timeout=10000
         )
+
+        page.wait_for_timeout(500)
 
         log("✅ 2ページ描画完了")
         return True
@@ -144,7 +130,7 @@ def run():
         final = []
 
         try:
-            # --- ナビ ---
+            # --- ナビゲーション ---
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -160,7 +146,7 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1P
+            # 1ページ
             # =========================
             log("📑 1ページ目")
 
@@ -171,7 +157,7 @@ def run():
             final.extend(res1)
 
             # =========================
-            # 2P
+            # 2ページ
             # =========================
             moved = go_next(page)
 
@@ -182,7 +168,6 @@ def run():
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-                # 同一チェック
                 if set(res1) == set(res2):
                     log("⚠️ 同一データ → 遷移失敗")
                 else:
