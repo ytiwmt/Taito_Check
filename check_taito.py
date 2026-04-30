@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.4-wait-fix-final"
+VERSION = "v7.5-maxday-detect-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -22,12 +22,30 @@ def send(msg):
             log(f"❌ Webhook送信失敗: {e}")
 
 # =========================
-# 解析（aタグ主体）
+# 最大日付取得（検知用）
+# =========================
+def get_max_day(page):
+    nums = []
+    links = page.locator("a[id*='lnkKoma']").all()
+
+    for l in links:
+        try:
+            txt = l.inner_text()
+            txt = txt.replace("\xa0", "").replace(" ", "")
+            m = re.search(r"(\d+)", txt)
+            if m:
+                nums.append(int(m.group(1)))
+        except:
+            pass
+
+    return max(nums) if nums else 0
+
+# =========================
+# 解析
 # =========================
 def parse(page):
     results = []
 
-    # --- aタグ優先 ---
     links = page.locator("a[id*='lnkKoma']").all()
 
     for l in links:
@@ -41,23 +59,10 @@ def parse(page):
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
-    # --- fallback ---
-    if not results:
-        log("⚠️ aタグ取得失敗 → hidden fallback")
-
-        elems = page.locator("input[name*='lnkKoma']").all()
-        for e in elems:
-            txt = e.get_attribute("value") or ""
-            txt = txt.replace("&nbsp;", "").strip()
-
-            m = re.search(r"(\d+)\s*(○|△|×)", txt)
-            if m:
-                results.append(f"{m.group(1)}{m.group(2)}")
-
     return results
 
 # =========================
-# 状態判定
+# 判定
 # =========================
 def analyze(results, label):
     maru = [r for r in results if "○" in r or "△" in r]
@@ -65,22 +70,19 @@ def analyze(results, label):
 
     if maru:
         log(f"{label}: AVAILABLE / ○△={len(maru)} / ×={len(batsu)}")
-        return "AVAILABLE"
-
-    if batsu:
+    elif batsu:
         log(f"{label}: FULL / ×={len(batsu)}")
-        return "FULL"
-
-    log(f"{label}: EMPTY")
-    return "EMPTY"
+    else:
+        log(f"{label}: EMPTY")
 
 # =========================
-# 次ページ遷移（修正版）
+# 次ページ遷移
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    before = page.locator("a[id*='lnkKoma']").count()
+    before_max = get_max_day(page)
+    log(f"📍 before max day: {before_max}")
 
     target = page.evaluate("""
         () => {
@@ -98,13 +100,23 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★ ここが修正ポイント（arg=）
         page.wait_for_function(
             """(args) => {
-                const count = document.querySelectorAll("a[id*='lnkKoma']").length;
-                return count > 0 && count !== args.before;
+                const texts = Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
+                    .map(a => a.innerText.replace(/\\s/g,''));
+
+                if (texts.length === 0) return false;
+
+                const nums = texts
+                    .map(t => parseInt(t))
+                    .filter(n => !isNaN(n));
+
+                if (nums.length === 0) return false;
+
+                const max = Math.max(...nums);
+                return max !== args.before_max;
             }""",
-            arg={"before": before},
+            arg={"before_max": before_max},
             timeout=10000
         )
 
@@ -130,7 +142,6 @@ def run():
         final = []
 
         try:
-            # --- ナビ ---
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -145,30 +156,24 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # ===== 1P =====
+            # 1P
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # ===== 2P =====
-            moved = go_next(page)
-
-            if moved:
+            # 2P
+            if go_next(page):
                 log("📑 2ページ目")
                 res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
-
-                if set(res1) != set(res2):
-                    final.extend(res2)
-                else:
-                    log("⚠️ 同一データ → 遷移失敗")
+                final.extend(res2)
             else:
                 log("⚠️ 2ページ取得失敗")
 
-            # ===== 集約 =====
+            # 集約
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -176,7 +181,7 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # ===== 通知 =====
+            # 通知
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
@@ -185,10 +190,7 @@ def run():
                     f"```\n" + "\n".join(final_unique) + "\n```"
                 )
             else:
-                msg = (
-                    f"🏸 空きなし [{VERSION}]\n"
-                    f"{datetime.datetime.now().strftime('%m/%d %H:%M')}"
-                )
+                msg = f"🏸 空きなし [{VERSION}]"
 
             send(msg)
 
