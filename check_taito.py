@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.4-safe-fallback"
+VERSION = "v6.5-dual-parse-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -21,12 +21,14 @@ def send(msg):
 
 
 # =========================
-# hidden input解析
+# 完全パース（hidden + fallback）
 # =========================
-def parse_hidden(page):
+def parse_all(page):
+    results = []
+
+    # --- ① hidden ---
     elems = page.locator("input[name^='h_dlRepeat2']").all()
 
-    results = []
     for e in elems:
         txt = e.get_attribute("value") or ""
         txt = txt.replace("&nbsp;", "").strip()
@@ -35,7 +37,16 @@ def parse_hidden(page):
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
-    return results
+    if results:
+        return results
+
+    # --- ② fallback（×ページ対応） ---
+    log("⚠️ hidden空 → DOM解析fallback")
+
+    text = page.inner_text("body")
+    matches = re.findall(r"(\d+)\s*(○|△|×)", text)
+
+    return [f"{d}{s}" for d, s in matches]
 
 
 # =========================
@@ -58,47 +69,37 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ（安全版）
+# 次ページ遷移
 # =========================
-def go_next_safe(page):
+def go_next(page):
     log("⏭️ 次ページ")
 
-    try:
-        target = page.evaluate("""
-            () => {
-                const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
-                for (const el of inputs) {
-                    if (el.name.includes("Migrated_lnkNextSpan")) {
-                        return el.name.replace("h_", "");
-                    }
+    target = page.evaluate("""
+        () => {
+            const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
+            for (const el of inputs) {
+                if (el.name.includes("Migrated_lnkNextSpan")) {
+                    return el.name.replace("h_", "");
                 }
-                return null;
             }
-        """)
+            return null;
+        }
+    """)
 
-        if not target:
-            log("⚠️ next target not found")
-            return False
+    if not target:
+        raise Exception("NextSpan target not found")
 
-        log(f"➡ POSTBACK TARGET: {target}")
+    log(f"➡ POSTBACK TARGET: {target}")
 
-        before = page.content()
+    page.evaluate(f"__doPostBack('{target}','')")
 
-        page.evaluate(f"__doPostBack('{target}','')")
+    # --- 更新待ち（柔軟）
+    try:
+        page.wait_for_load_state("networkidle", timeout=5000)
+    except:
+        pass
 
-        # ★ ここが重要：更新検知に依存しない
-        for _ in range(10):
-            page.wait_for_timeout(500)
-            if page.content() != before:
-                log("✅ ページ更新検知")
-                return True
-
-        log("⚠️ 更新検知できず（続行）")
-        return True
-
-    except Exception as e:
-        log(f"⚠️ 次ページ失敗: {e}")
-        return False
+    page.wait_for_timeout(1000)
 
 
 # =========================
@@ -132,23 +133,25 @@ def run():
             # =========================
             log("📑 1ページ目")
 
-            res1 = parse_hidden(page)
+            res1 = parse_all(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
 
             # =========================
-            # 2ページ（失敗しても続行）
+            # 2ページ
             # =========================
-            res2 = []
+            try:
+                go_next(page)
 
-            if go_next_safe(page):
                 log("📑 2ページ目")
 
-                res2 = parse_hidden(page)
+                res2 = parse_all(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
-            else:
-                log("⚠️ 2ページ取得スキップ")
+
+            except Exception as e:
+                log(f"⚠️ 2ページ取得失敗: {e}")
+                res2 = []
 
             # =========================
             # 集約
@@ -157,12 +160,10 @@ def run():
             log(f"📦 FINAL: {final}")
 
             # =========================
-            # 通知（必ず実行）
+            # 通知（Ver付き）
             # =========================
             if any("○" in x or "△" in x for x in final):
-                msg = f"""@everyone
-🏸 空きあり ({VERSION})
-""" + "\n".join(final)
+                msg = f"@everyone\n🏸 空きあり ({VERSION})\n" + "\n".join(final)
             else:
                 msg = f"🏸 空きなし ({VERSION})"
 
@@ -173,8 +174,8 @@ def run():
             import traceback
             traceback.print_exc()
 
-            # ★ ここ重要：エラーでも通知
-            send(f"⚠️ エラー発生 ({VERSION})\n{e}")
+            # --- 最低限通知（落ちても送る） ---
+            send(f"⚠️ ERROR ({VERSION})\n{e}")
 
         finally:
             log("🔒 END")
