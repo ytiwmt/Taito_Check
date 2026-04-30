@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.8-dom-rebuild-stable"
+VERSION = "v7.9-time-wait-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -57,24 +57,15 @@ def analyze(results, label):
 
 
 # =========================
-# ★重要：PostBack完了待ち（DOM再生成検知）
+# ★重要：安定待機（DOM依存完全廃止）
 # =========================
 def wait_postback(page):
-    # 1. DOMが一度消える（UpdatePanel対策）
-    page.wait_for_function(
-        """() => {
-            return document.querySelectorAll("a[id*='lnkKoma']").length === 0;
-        }""",
-        timeout=10000
-    )
+    # ASP.NETはDOM差分が信用できないため「時間固定＋再描画確認」
 
-    # 2. DOMが再生成される
-    page.wait_for_function(
-        """() => {
-            return document.querySelectorAll("a[id*='lnkKoma']").length > 0;
-        }""",
-        timeout=15000
-    )
+    page.wait_for_timeout(3000)
+
+    # 最低限「要素が存在する」ことだけ保証
+    page.wait_for_selector("a[id*='lnkKoma']", timeout=15000)
 
     page.wait_for_timeout(500)
 
@@ -101,7 +92,7 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★ここが本体（比較完全廃止）
+        # ★ここが唯一の安定条件
         wait_postback(page)
 
         log("✅ 2ページ描画完了")
