@@ -1,109 +1,173 @@
+import requests
 from playwright.sync_api import sync_playwright
-import time
+import os
 import re
+import datetime
 
-URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
+VERSION = "v6.3-fixed-next"
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
+BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
+
 
 def log(msg):
-    print(msg, flush=True)
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {msg}")
 
-# -----------------------------
-# 安定クリック（強制クリック）
-# -----------------------------
-def safe_click(page, selector, label):
-    try:
-        page.wait_for_selector(selector, timeout=15000, state="attached")
-        page.click(selector, timeout=5000)
-        log(f"➡ {label}")
-        time.sleep(1)
-    except:
-        log(f"⚠ {label} click失敗 → JS強制実行")
-        page.evaluate(f"""
-            const el = document.querySelector("{selector}");
-            if (el) el.click();
-        """)
-        time.sleep(1)
 
-# -----------------------------
-# ASP.NET PostBack
-# -----------------------------
-def postback(page, target):
-    page.evaluate(f"""
-        __doPostBack('{target}', '');
-    """)
+def send(msg):
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"content": msg})
 
-# -----------------------------
-# ページ解析
-# -----------------------------
-def parse_page(page):
-    cells = page.query_selector_all("a[id*='lnkKoma']")
-    result = []
 
-    for c in cells:
-        text = c.inner_text().strip()
-        m = re.search(r"(\\d+).*?(○|△|×)", text)
+# =========================
+# hidden input解析（安定版）
+# =========================
+def parse_hidden(page):
+    elems = page.locator("input[name^='h_dlRepeat2']").all()
+
+    results = []
+    for e in elems:
+        txt = e.get_attribute("value") or ""
+        txt = txt.replace("&nbsp;", "").strip()
+
+        m = re.search(r"(\d+).*(○|△|×)", txt)
         if m:
-            result.append(m.group(1) + m.group(2))
+            results.append(f"{m.group(1)}{m.group(2)}")
 
-    return result
+    return results
 
-# -----------------------------
-# メイン
-# -----------------------------
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
 
-    log("[START] v7.1-stable")
+# =========================
+# 状態判定
+# =========================
+def analyze(results, label):
+    maru = [r for r in results if "○" in r or "△" in r]
+    batsu = [r for r in results if "×" in r]
 
-    page.goto(URL)
+    if maru:
+        log(f"{label}: AVAILABLE / ○△={len(maru)} / ×={len(batsu)}")
+        return "AVAILABLE"
 
-    # --- ここが重要：IDベースで辿る ---
-    safe_click(page, "#ucPCSideMenuBody_DataListBody_ctl02_ucPCSideMenuItem_dataListItem_ctl00_lnkBtnGoPage", "施設検索")
-    safe_click(page, "#ucPCSideMenuBody_DataListBody_ctl03_ucPCSideMenuItem_dataListItem_ctl00_lnkBtnGoPage", "日時選択")
+    if batsu:
+        log(f"{label}: FULL / ×={len(batsu)}")
+        return "FULL"
 
-    # 空き照会へ
-    page.evaluate("__doPostBack('ucPCSideMenuBody$DataListBody$ctl03$ucPCSideMenuItem$dataListItem$ctl00$lnkBtnGoPage','')")
-    time.sleep(2)
+    log(f"{label}: PARSE_FAILED")
+    return "PARSE_FAILED"
 
-    # 確定ボタン
-    safe_click(page, "#ucTermSetting_btnForward", "確定")
 
-    # ============================
-    # 1ページ目
-    # ============================
-    log("📑 1ページ目")
-    page.wait_for_selector("a[id*='lnkKoma']", timeout=15000)
-
-    page1 = parse_page(page)
-    log(f"1P: {page1}")
-
-    # ============================
-    # 次ページ（重要）
-    # ============================
+# =========================
+# 次ページ遷移（修正版）
+# =========================
+def go_next(page):
     log("⏭️ 次ページ")
 
-    prev_html = page.content()
+    # ① hiddenからターゲット取得
+    target = page.evaluate("""
+        () => {
+            const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
+            for (const el of inputs) {
+                if (el.name.includes("Migrated_lnkNextSpan")) {
+                    return el.name.replace("h_", "");
+                }
+            }
+            return null;
+        }
+    """)
 
-    postback(page, "dlRepeat2$ctl00$tpItem2$Migrated_lnkNextSpan")
+    if not target:
+        raise Exception("NextSpan target not found")
 
-    # DOM変化待ち
-    for _ in range(20):
-        time.sleep(0.5)
-        if page.content() != prev_html:
-            break
+    log(f"➡ POSTBACK TARGET: {target}")
 
-    # ============================
-    # 2ページ目
-    # ============================
-    log("📑 2ページ目")
+    # ② postback（ここが重要：wait_for_load_stateだけに依存しない）
+    page.evaluate(f"__doPostBack('{target}','')")
 
-    try:
-        page.wait_for_selector("form#Form1", timeout=5000)
-    except:
-        pass
+    # ③ DOM更新待ち（2ページ目が空になる原因を潰す）
+    page.wait_for_function("""
+        () => {
+            const elems = document.querySelectorAll("input[name^='h_dlRepeat2']");
+            return elems.length > 0;
+        }
+    """, timeout=10000)
 
-    page2 = parse_page(page)
-    log(f"2P: {page2}")
+    page.wait_for_timeout(800)
 
-    browser.close()
+
+# =========================
+# メイン
+# =========================
+def run():
+    with sync_playwright() as p:
+        log(f"🚀 {VERSION}")
+
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        try:
+            # --- 初期遷移 ---
+            page.goto(BASE_URL)
+
+            page.locator("input[value='公共施設予約メニュー']").click()
+            page.locator("input[value^='1. 空き照会']").click()
+            page.locator("input[value='次頁']").click()
+            page.locator("input[value='柳北スポーツプラザ']").click()
+            page.locator("input[name='ucPCFooter$btnForward']").click()
+
+            page.locator("input[value='カレンダー']").click()
+            page.locator("input[value='1ヶ月']").click()
+            page.locator("input[name='ucPCFooter$btnForward']").click()
+
+            page.wait_for_load_state("networkidle")
+
+            # =========================
+            # 1ページ
+            # =========================
+            log("📑 1ページ目")
+
+            res1 = parse_hidden(page)
+            log(f"1P: {res1}")
+            analyze(res1, "1P")
+
+            # =========================
+            # 2ページ
+            # =========================
+            go_next(page)
+
+            log("📑 2ページ目")
+
+            res2 = parse_hidden(page)
+            log(f"2P: {res2}")
+            analyze(res2, "2P")
+
+            # =========================
+            # 集約
+            # =========================
+            final = sorted(set(res1 + res2))
+            log(f"📦 FINAL: {final}")
+
+            # =========================
+            # 通知（VERSION付き）
+            # =========================
+            header = f"[{VERSION}]"
+
+            if any("○" in x or "△" in x for x in final):
+                msg = f"{header}\n@everyone\n🏸 空きあり\n" + "\n".join(final)
+            else:
+                msg = f"{header}\n🏸 空きなし"
+
+            send(msg)
+
+        except Exception as e:
+            log(f"🔥 ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+
+        finally:
+            log("🔒 END")
+            browser.close()
+
+
+if __name__ == "__main__":
+    run()
