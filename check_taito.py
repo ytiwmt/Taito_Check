@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.6-dom-stable"
+VERSION = "v7.7-stable-fix"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -46,9 +46,6 @@ def parse(page):
     return results
 
 
-# =========================
-# 判定
-# =========================
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
     ng = [r for r in results if "×" in r]
@@ -60,15 +57,21 @@ def analyze(results, label):
 
 
 # =========================
-# 遷移キー（重要）
+# ★重要：DOM完全比較キー
 # =========================
-def get_dom_key(page):
-    el = page.locator("a[id*='lnkKoma']").first
-    try:
-        txt = el.inner_text()
-        return txt.replace("\xa0", "").replace(" ", "").strip()
-    except:
-        return ""
+def get_fingerprint(page):
+    links = page.locator("a[id*='lnkKoma']").all()
+
+    items = []
+    for l in links:
+        try:
+            txt = l.inner_text()
+            txt = txt.replace("\xa0", "").replace(" ", "").strip()
+            items.append(txt)
+        except:
+            pass
+
+    return "|".join(items)
 
 
 # =========================
@@ -77,8 +80,8 @@ def get_dom_key(page):
 def go_next(page):
     log("⏭️ 次ページ")
 
-    before_key = get_dom_key(page)
-    log(f"📍 before key: {before_key}")
+    before = get_fingerprint(page)
+    log(f"📍 before fp size: {len(before)}")
 
     target = page.evaluate("""
         () => {
@@ -96,17 +99,20 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★ここが核心（max_day廃止）
+        # ★完全一致待ち（ここが修正本体）
         page.wait_for_function(
             """(args) => {
-                const el = document.querySelector("a[id*='lnkKoma']");
-                if (!el) return false;
+                const els = Array.from(document.querySelectorAll("a[id*='lnkKoma']"));
+                if (els.length === 0) return false;
 
-                const now = el.innerText.replace(/\\s/g,'').replace(/\\u00a0/g,'');
+                const now = els.map(e =>
+                    e.innerText.replace(/\\s/g,'').replace(/\\u00a0/g,'')
+                ).join('|');
+
                 return now !== args.before;
             }""",
-            arg={"before": before_key},
-            timeout=10000
+            arg={"before": before},
+            timeout=15000
         )
 
         page.wait_for_timeout(500)
@@ -170,7 +176,6 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # 通知
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
