@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.13-click-event-stable"
+VERSION = "v7.14-content-diff-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -54,35 +54,57 @@ def analyze(results, label):
 
 
 # =========================
-# ★遷移（最終修正版）
+# ★状態スナップショット
+# =========================
+def snapshot(page):
+    return page.evaluate("""
+        () => {
+            return Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
+                .map(a => a.innerText.replace(/\\s/g,''))
+                .join('|');
+        }
+    """)
+
+
+# =========================
+# 次ページ（最終版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
+    before = snapshot(page)
+
+    target = page.evaluate("""
+        () => {
+            const el = document.querySelector("input[name*='lnkNextSpan']");
+            return el ? el.name.replace("h_", "") : null;
+        }
+    """)
+
+    if not target:
+        log("⚠️ NextSpanなし")
+        return False
+
+    log("➡ CLICK POSTBACK")
+
     try:
-        link = page.locator("a[id*='lnkNextSpan']").first
+        # ★クリックではなくASP.NETイベント直接実行（安定優先）
+        page.evaluate(f"__doPostBack('{target}','')")
 
-        if link.count() == 0:
-            log("⚠️ NextSpanなし")
-            return False
+        # ★本質：DOMではなく中身差分を見る
+        page.wait_for_function(
+            """(prev) => {
+                const now = Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
+                    .map(a => a.innerText.replace(/\\s/g,''))
+                    .join('|');
 
-        log("➡ CLICK EVENT POSTBACK")
+                return now && now !== prev;
+            }""",
+            arg=before,
+            timeout=20000
+        )
 
-        # ★重要：JS直呼び禁止、完全クリック再現
-        link.click()
-
-        # ASP.NET再描画待ち
-        page.wait_for_load_state("networkidle")
-
-        # 保険待機（UpdatePanel対策）
-        page.wait_for_timeout(1000)
-
-        # 存在確認のみ（visible依存なし）
-        page.wait_for_function("""
-            () => document.querySelectorAll("a[id*='lnkKoma']").length > 0
-        """, timeout=20000)
-
-        log("✅ 2ページ描画完了")
+        log("✅ 2ページ更新検知完了")
         return True
 
     except Exception as e:
