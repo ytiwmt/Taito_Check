@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.10-attached-wait-stable"
+VERSION = "v7.11-network-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -50,27 +50,18 @@ def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
     ng = [r for r in results if "×" in r]
 
-    if ok:
-        log(f"{label}: AVAILABLE / ○△={len(ok)} / ×={len(ng)}")
-    else:
-        log(f"{label}: FULL / ×={len(ng)}")
+    log(f"{label}: ○△={len(ok)} / ×={len(ng)}")
 
 
 # =========================
-# ★PostBack待ち（修正版）
+# ★遷移待ち（最終版）
 # =========================
 def wait_postback(page):
-    # ASP.NETはvisible依存が不安定なのでattachedのみ使用
+    # 1. ネットワーク完了を待つ（最重要）
+    page.wait_for_load_state("networkidle")
 
-    page.wait_for_timeout(3000)
-
-    page.wait_for_selector(
-        "a[id*='lnkKoma']",
-        state="attached",
-        timeout=15000
-    )
-
-    page.wait_for_timeout(500)
+    # 2. 念のため短い固定待機（ASP.NET対策）
+    page.wait_for_timeout(800)
 
 
 # =========================
@@ -96,6 +87,9 @@ def go_next(page):
         page.evaluate(f"__doPostBack('{target}','')")
 
         wait_postback(page)
+
+        # 追加安定チェック（最低限存在確認）
+        page.wait_for_selector("a[id*='lnkKoma']", timeout=15000)
 
         log("✅ 2ページ描画完了")
         return True
