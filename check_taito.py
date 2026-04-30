@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.0-postback-fix"
+VERSION = "v6.1-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -24,11 +24,11 @@ def send(msg):
 # hidden input解析（最重要）
 # =========================
 def parse_hidden(page):
-    vals = page.locator("input[id*='lnkKoma']").all()
+    elems = page.locator("input[name^='h_dlRepeat2']").all()
 
     results = []
-    for v in vals:
-        txt = v.get_attribute("value") or ""
+    for e in elems:
+        txt = e.get_attribute("value") or ""
         txt = txt.replace("&nbsp;", "").strip()
 
         m = re.search(r"(\d+).*(○|△|×)", txt)
@@ -58,7 +58,7 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ遷移（核心）
+# 次ページ遷移（PostBack）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
@@ -86,9 +86,9 @@ def run():
         page = browser.new_page()
 
         try:
+            # --- 初期遷移 ---
             page.goto(BASE_URL)
 
-            # --- 遷移 ---
             page.locator("input[value='公共施設予約メニュー']").click()
             page.locator("input[value^='1. 空き照会']").click()
             page.locator("input[value='次頁']").click()
@@ -102,16 +102,16 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ
+            # 1ページ目
             # =========================
             log("📑 1ページ目")
 
             res1 = parse_hidden(page)
             log(f"1P: {res1}")
-            analyze(res1, "1P")
+            status1 = analyze(res1, "1P")
 
             # =========================
-            # 2ページ
+            # 2ページ目
             # =========================
             go_next(page)
 
@@ -119,10 +119,10 @@ def run():
 
             res2 = parse_hidden(page)
             log(f"2P: {res2}")
-            analyze(res2, "2P")
+            status2 = analyze(res2, "2P")
 
             # =========================
-            # 集約
+            # 結果集約
             # =========================
             final = sorted(set(res1 + res2))
             log(f"📦 FINAL: {final}")
@@ -136,6 +136,8 @@ def run():
 
         except Exception as e:
             log(f"🔥 ERROR: {e}")
+            import traceback
+            traceback.print_exc()
 
         finally:
             log("🔒 END")
