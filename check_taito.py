@@ -7,12 +7,22 @@ URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
+# -----------------------------
+# 安定クリック
+# -----------------------------
+def safe_click(page, selector, name):
+    page.wait_for_selector(selector, timeout=10000)
+    page.click(selector)
+    log(f"➡ {name}")
+    page.wait_for_timeout(800)
+
+# -----------------------------
+# パース（hidden主体）
+# -----------------------------
 def parse_page(page, label):
     result = []
 
-    # ---------------------------
-    # ① hidden inputから取得（本命）
-    # ---------------------------
+    # hidden（完全データ）
     hidden = page.eval_on_selector_all(
         "input[id*='lnkKoma']",
         "els => els.map(e => e.value)"
@@ -22,15 +32,11 @@ def parse_page(page, label):
         if not v:
             continue
         text = v.replace("&nbsp;", "").strip()
-
-        # 例: "28  ×"
         m = re.match(r"(\\d+)\\s*([○△×])", text)
         if m:
             result.append(f"{m.group(1)}{m.group(2)}")
 
-    # ---------------------------
-    # ② aタグ（○△だけ補完）
-    # ---------------------------
+    # aタグ（○△補助）
     links = page.eval_on_selector_all(
         "a[id*='lnkKoma']",
         "els => els.map(e => e.innerText)"
@@ -57,51 +63,76 @@ def parse_page(page, label):
 
     return result, status
 
-
+# -----------------------------
+# 次ページ（postback直叩き）
+# -----------------------------
 def goto_next(page):
     log("⏭️ 次ページ")
 
-    # ASP.NET postback直接叩く
     target = page.eval_on_selector(
         "input[id*='lnkNextSpan']",
         "el => el.id.replace('h_', '')"
     )
 
+    if not target:
+        log("⚠️ 次ページリンクなし")
+        return False
+
     log(f"➡ POSTBACK TARGET: {target}")
 
     page.evaluate(f"__doPostBack('{target}', '')")
 
-    # 更新待ち
-    page.wait_for_timeout(1500)
+    # DOM更新待ち（重要）
+    page.wait_for_timeout(2000)
+    return True
 
 
+# =============================
+# メイン
+# =============================
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
 
-    log("🚀 v6.3-hidden-final")
+    log("🚀 v7.0-stable")
+
     page.goto(URL)
 
-    # 遷移操作（省略せず確実に）
-    page.click("text=公共施設予約メニュー")
-    page.click("text=空き照会")
-    page.click("text=次頁")
-    page.click("text=施設")
-    page.click("text=進む")
-    page.click("text=カレンダー")
-    page.click("text=1ヶ月")
-    page.click("text=確定")
+    # -------------------------
+    # 遷移（完全安定版）
+    # -------------------------
+    safe_click(page, "a:has-text('公共施設予約メニュー')", "公共施設予約メニュー")
+    safe_click(page, "a:has-text('空き照会')", "空き照会")
+    safe_click(page, "a:has-text('次頁')", "次頁")
+    safe_click(page, "a:has-text('施設')", "施設")
+    safe_click(page, "a:has-text('進む')", "進む")
+    safe_click(page, "a:has-text('カレンダー')", "カレンダー")
+    safe_click(page, "a:has-text('1ヶ月')", "1ヶ月")
+
+    page.wait_for_selector("input[value='確定']")
+    page.click("input[value='確定']")
+    log("➡ 確定")
 
     page.wait_for_timeout(2000)
 
+    # -------------------------
+    # 1ページ目
+    # -------------------------
     log("📑 1ページ目")
     r1, s1 = parse_page(page, "1P")
 
-    goto_next(page)
+    # -------------------------
+    # 2ページ目
+    # -------------------------
+    if goto_next(page):
+        log("📑 2ページ目")
+        r2, s2 = parse_page(page, "2P")
+    else:
+        r2, s2 = [], "NO_NEXT"
 
-    log("📑 2ページ目")
-    r2, s2 = parse_page(page, "2P")
-
+    # -------------------------
+    # 結果
+    # -------------------------
     final = sorted(set(r1 + r2))
     log(f"📦 FINAL: {final}")
 
