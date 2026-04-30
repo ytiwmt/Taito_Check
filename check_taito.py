@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.1-dual-parse-complete"
+VERSION = "v7.2-render-wait-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -39,7 +39,7 @@ def parse_hidden(page):
     return results
 
 # =========================
-# DOM解析（fallback）
+# DOM解析（強化版）
 # =========================
 def parse_dom(page):
     results = []
@@ -48,24 +48,25 @@ def parse_dom(page):
 
     for c in cells:
         try:
-            txt = (c.inner_text() or "").strip()
+            txt = c.inner_text()
+            txt = txt.replace("\n", "").replace(" ", "").strip()
         except:
             continue
 
-        m = re.search(r"(\d+)\s*(○|△|×)", txt)
+        m = re.search(r"(\d+).*?(○|△|×)", txt)
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
     return results
 
 # =========================
-# 統合パーサ
+# 統合
 # =========================
 def parse(page):
     res = parse_hidden(page)
 
     if not res:
-        log("⚠️ hidden取得失敗 → DOM解析へ切替")
+        log("⚠️ hiddenなし → DOM解析へ")
         res = parse_dom(page)
 
     return res
@@ -89,10 +90,13 @@ def analyze(results, label):
     return "EMPTY"
 
 # =========================
-# 次ページ（強制）
+# 次ページ（完全版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
+
+    # 現在のテーブル状態を記録
+    before_count = page.locator("td").count()
 
     target = page.evaluate("""
         () => {
@@ -109,10 +113,22 @@ def go_next(page):
 
     try:
         page.evaluate(f"__doPostBack('{target}','')")
-        page.wait_for_timeout(1500)
+
+        # ★DOM変化待機（これが核心）
+        page.wait_for_function(
+            """(before) => {
+                const tds = document.querySelectorAll("td").length;
+                return tds > 20 && tds !== before;
+            }""",
+            before_count,
+            timeout=10000
+        )
+
+        log("✅ 2ページ描画完了")
         return True
+
     except Exception as e:
-        log(f"❌ PostBack失敗: {e}")
+        log(f"❌ 遷移検知失敗: {e}")
         return False
 
 # =========================
@@ -166,13 +182,13 @@ def run():
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-                # 同一チェック（遷移失敗対策）
+                # 同一チェック
                 if set(res1) == set(res2):
-                    log("⚠️ 1Pと同一 → 遷移失敗扱い")
+                    log("⚠️ 同一データ → 遷移失敗")
                 else:
                     final.extend(res2)
             else:
-                log("⚠️ 2ページスキップ")
+                log("⚠️ 2ページ取得失敗")
 
             # =========================
             # 集約
