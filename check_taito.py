@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.0-final-stable"
+VERSION = "v7.1-dual-parse-complete"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -22,9 +22,9 @@ def send(msg):
             log(f"❌ Webhook送信失敗: {e}")
 
 # =========================
-# 解析（hidden安定版）
+# hidden解析
 # =========================
-def parse_koma(page):
+def parse_hidden(page):
     elems = page.locator("input[name*='lnkKoma']").all()
     results = []
 
@@ -37,6 +37,38 @@ def parse_koma(page):
             results.append(f"{m.group(1)}{m.group(2)}")
 
     return results
+
+# =========================
+# DOM解析（fallback）
+# =========================
+def parse_dom(page):
+    results = []
+
+    cells = page.locator("td").all()
+
+    for c in cells:
+        try:
+            txt = (c.inner_text() or "").strip()
+        except:
+            continue
+
+        m = re.search(r"(\d+)\s*(○|△|×)", txt)
+        if m:
+            results.append(f"{m.group(1)}{m.group(2)}")
+
+    return results
+
+# =========================
+# 統合パーサ
+# =========================
+def parse(page):
+    res = parse_hidden(page)
+
+    if not res:
+        log("⚠️ hidden取得失敗 → DOM解析へ切替")
+        res = parse_dom(page)
+
+    return res
 
 # =========================
 # 状態判定
@@ -57,7 +89,7 @@ def analyze(results, label):
     return "EMPTY"
 
 # =========================
-# 次ページ（強制型）
+# 次ページ（強制）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
@@ -77,10 +109,8 @@ def go_next(page):
 
     try:
         page.evaluate(f"__doPostBack('{target}','')")
-        page.wait_for_timeout(1500)  # ★ここが重要（検知を捨てて時間保証）
-
+        page.wait_for_timeout(1500)
         return True
-
     except Exception as e:
         log(f"❌ PostBack失敗: {e}")
         return False
@@ -98,7 +128,7 @@ def run():
         final = []
 
         try:
-            # --- ナビゲーション ---
+            # --- ナビ ---
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -114,38 +144,35 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ
+            # 1P
             # =========================
             log("📑 1ページ目")
 
-            res1 = parse_koma(page)
+            res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
 
             final.extend(res1)
 
             # =========================
-            # 2ページ
+            # 2P
             # =========================
             moved = go_next(page)
 
-            res2 = []
             if moved:
                 log("📑 2ページ目")
 
-                res2 = parse_koma(page)
+                res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-                # ★ここが核心：同一なら失敗扱い
+                # 同一チェック（遷移失敗対策）
                 if set(res1) == set(res2):
-                    log("⚠️ 1Pと同一 → 遷移失敗と判定")
-                    res2 = []
+                    log("⚠️ 1Pと同一 → 遷移失敗扱い")
                 else:
                     final.extend(res2)
-
             else:
-                log("⚠️ 2ページ取得スキップ")
+                log("⚠️ 2ページスキップ")
 
             # =========================
             # 集約
