@@ -4,14 +4,16 @@ import os
 import re
 import datetime
 
-VERSION = "v7.5-maxday-detect-final"
+VERSION = "v7.6-dom-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
+
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
+
 
 def send(msg):
     log(f"送信内容:\n{msg}")
@@ -19,26 +21,8 @@ def send(msg):
         try:
             requests.post(WEBHOOK_URL, json={"content": msg})
         except Exception as e:
-            log(f"❌ Webhook送信失敗: {e}")
+            log(f"❌ Webhook失敗: {e}")
 
-# =========================
-# 最大日付取得（検知用）
-# =========================
-def get_max_day(page):
-    nums = []
-    links = page.locator("a[id*='lnkKoma']").all()
-
-    for l in links:
-        try:
-            txt = l.inner_text()
-            txt = txt.replace("\xa0", "").replace(" ", "")
-            m = re.search(r"(\d+)", txt)
-            if m:
-                nums.append(int(m.group(1)))
-        except:
-            pass
-
-    return max(nums) if nums else 0
 
 # =========================
 # 解析
@@ -61,28 +45,40 @@ def parse(page):
 
     return results
 
+
 # =========================
 # 判定
 # =========================
 def analyze(results, label):
-    maru = [r for r in results if "○" in r or "△" in r]
-    batsu = [r for r in results if "×" in r]
+    ok = [r for r in results if "○" in r or "△" in r]
+    ng = [r for r in results if "×" in r]
 
-    if maru:
-        log(f"{label}: AVAILABLE / ○△={len(maru)} / ×={len(batsu)}")
-    elif batsu:
-        log(f"{label}: FULL / ×={len(batsu)}")
+    if ok:
+        log(f"{label}: AVAILABLE / ○△={len(ok)} / ×={len(ng)}")
     else:
-        log(f"{label}: EMPTY")
+        log(f"{label}: FULL / ×={len(ng)}")
+
 
 # =========================
-# 次ページ遷移
+# 遷移キー（重要）
+# =========================
+def get_dom_key(page):
+    el = page.locator("a[id*='lnkKoma']").first
+    try:
+        txt = el.inner_text()
+        return txt.replace("\xa0", "").replace(" ", "").strip()
+    except:
+        return ""
+
+
+# =========================
+# 次ページ
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    before_max = get_max_day(page)
-    log(f"📍 before max day: {before_max}")
+    before_key = get_dom_key(page)
+    log(f"📍 before key: {before_key}")
 
     target = page.evaluate("""
         () => {
@@ -100,34 +96,27 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
+        # ★ここが核心（max_day廃止）
         page.wait_for_function(
             """(args) => {
-                const texts = Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
-                    .map(a => a.innerText.replace(/\\s/g,''));
+                const el = document.querySelector("a[id*='lnkKoma']");
+                if (!el) return false;
 
-                if (texts.length === 0) return false;
-
-                const nums = texts
-                    .map(t => parseInt(t))
-                    .filter(n => !isNaN(n));
-
-                if (nums.length === 0) return false;
-
-                const max = Math.max(...nums);
-                return max !== args.before_max;
+                const now = el.innerText.replace(/\\s/g,'').replace(/\\u00a0/g,'');
+                return now !== args.before;
             }""",
-            arg={"before_max": before_max},
+            arg={"before": before_key},
             timeout=10000
         )
 
         page.wait_for_timeout(500)
-
         log("✅ 2ページ描画完了")
         return True
 
     except Exception as e:
-        log(f"❌ 遷移検知失敗: {e}")
+        log(f"❌ 遷移失敗: {e}")
         return False
+
 
 # =========================
 # メイン
