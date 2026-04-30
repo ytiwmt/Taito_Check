@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.12-dom-polling-stable"
+VERSION = "v7.13-click-event-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -54,47 +54,33 @@ def analyze(results, label):
 
 
 # =========================
-# ★遷移待ち（最終安定版）
-# =========================
-def wait_postback(page):
-    # DOMのvisible / selector待ちを完全に捨てる
-
-    page.wait_for_function("""
-        () => {
-            const els = document.querySelectorAll("a[id*='lnkKoma']");
-            if (!els || els.length === 0) return false;
-
-            const txt = els[0].innerText;
-            return typeof txt === 'string' && txt.length > 0;
-        }
-    """, timeout=20000)
-
-    page.wait_for_timeout(500)
-
-
-# =========================
-# 次ページ
+# ★遷移（最終修正版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    target = page.evaluate("""
-        () => {
-            const el = document.querySelector("input[name*='lnkNextSpan']");
-            return el ? el.name.replace("h_", "") : null;
-        }
-    """)
-
-    if not target:
-        log("⚠️ NextSpanなし")
-        return False
-
-    log(f"➡ POSTBACK: {target}")
-
     try:
-        page.evaluate(f"__doPostBack('{target}','')")
+        link = page.locator("a[id*='lnkNextSpan']").first
 
-        wait_postback(page)
+        if link.count() == 0:
+            log("⚠️ NextSpanなし")
+            return False
+
+        log("➡ CLICK EVENT POSTBACK")
+
+        # ★重要：JS直呼び禁止、完全クリック再現
+        link.click()
+
+        # ASP.NET再描画待ち
+        page.wait_for_load_state("networkidle")
+
+        # 保険待機（UpdatePanel対策）
+        page.wait_for_timeout(1000)
+
+        # 存在確認のみ（visible依存なし）
+        page.wait_for_function("""
+            () => document.querySelectorAll("a[id*='lnkKoma']").length > 0
+        """, timeout=20000)
 
         log("✅ 2ページ描画完了")
         return True
