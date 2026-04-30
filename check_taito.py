@@ -4,29 +4,30 @@ import os
 import re
 import datetime
 
-VERSION = "v6.8-page-detect-final"
+VERSION = "v7.0-final-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
-
 
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
 
-
 def send(msg):
+    log(f"送信内容:\n{msg}")
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg})
-
+        try:
+            requests.post(WEBHOOK_URL, json={"content": msg})
+        except Exception as e:
+            log(f"❌ Webhook送信失敗: {e}")
 
 # =========================
-# KOMAパース（存在するものだけ取る）
+# 解析（hidden安定版）
 # =========================
 def parse_koma(page):
     elems = page.locator("input[name*='lnkKoma']").all()
-
     results = []
+
     for e in elems:
         txt = e.get_attribute("value") or ""
         txt = txt.replace("&nbsp;", "").strip()
@@ -37,9 +38,8 @@ def parse_koma(page):
 
     return results
 
-
 # =========================
-# 状態判定（空配列も正常扱い）
+# 状態判定
 # =========================
 def analyze(results, label):
     maru = [r for r in results if "○" in r or "△" in r]
@@ -53,52 +53,37 @@ def analyze(results, label):
         log(f"{label}: FULL / ×={len(batsu)}")
         return "FULL"
 
-    # ★ここが重要（2ページ目対策）
-    log(f"{label}: FULL (データなし)")
-    return "FULL"
-
+    log(f"{label}: EMPTY")
+    return "EMPTY"
 
 # =========================
-# 次ページ遷移（ページ変化検知）
+# 次ページ（強制型）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    before = page.content()
-
     target = page.evaluate("""
         () => {
-            const inputs = Array.from(document.querySelectorAll("input[name*='lnkNextSpan']"));
-            for (const el of inputs) {
-                return el.name.replace("h_", "");
-            }
-            return null;
+            const el = document.querySelector("input[name*='lnkNextSpan']");
+            return el ? el.name.replace("h_", "") : null;
         }
     """)
 
     if not target:
-        log("⚠️ 次ページなし")
+        log("⚠️ NextSpanなし")
         return False
 
-    log(f"➡ POSTBACK TARGET: {target}")
+    log(f"➡ POSTBACK: {target}")
 
     try:
         page.evaluate(f"__doPostBack('{target}','')")
+        page.wait_for_timeout(1500)  # ★ここが重要（検知を捨てて時間保証）
 
-        # ★DOM変化ベースで待つ（KOMA依存しない）
-        page.wait_for_function(
-            """(prev) => document.body.innerHTML !== prev""",
-            before,
-            timeout=10000
-        )
-
-        log("✅ ページ変化検知")
         return True
 
-    except:
-        log("⚠️ ページ変化検知失敗")
+    except Exception as e:
+        log(f"❌ PostBack失敗: {e}")
         return False
-
 
 # =========================
 # メイン
@@ -113,7 +98,7 @@ def run():
         final = []
 
         try:
-            # --- 初期遷移 ---
+            # --- ナビゲーション ---
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -129,7 +114,7 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ目
+            # 1ページ
             # =========================
             log("📑 1ページ目")
 
@@ -137,40 +122,56 @@ def run():
             log(f"1P: {res1}")
             analyze(res1, "1P")
 
-            final += res1
+            final.extend(res1)
 
             # =========================
-            # 2ページ目
+            # 2ページ
             # =========================
-            if go_next(page):
+            moved = go_next(page)
+
+            res2 = []
+            if moved:
                 log("📑 2ページ目")
 
                 res2 = parse_koma(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
 
-                final += res2
+                # ★ここが核心：同一なら失敗扱い
+                if set(res1) == set(res2):
+                    log("⚠️ 1Pと同一 → 遷移失敗と判定")
+                    res2 = []
+                else:
+                    final.extend(res2)
+
             else:
-                log("⚠️ 2ページ目スキップ")
+                log("⚠️ 2ページ取得スキップ")
 
             # =========================
             # 集約
             # =========================
-            final = sorted(set(final))
-            log(f"📦 FINAL: {final}")
+            final_unique = sorted(
+                list(set(final)),
+                key=lambda x: int(re.sub(r"\D", "", x))
+            )
+
+            log(f"📦 FINAL: {final_unique}")
 
             # =========================
-            # 通知（必ず送る）
+            # 通知
             # =========================
-            if any("○" in x or "△" in x for x in final):
+            if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
-                    f"🏸 空きあり\n"
-                    f"Ver: {VERSION}\n"
-                    + "\n".join(final)
+                    f"🏸 空きあり [{VERSION}]\n"
+                    f"{len(final_unique)}件\n"
+                    f"```\n" + "\n".join(final_unique) + "\n```"
                 )
             else:
-                msg = f"🏸 空きなし\nVer: {VERSION}"
+                msg = (
+                    f"🏸 空きなし [{VERSION}]\n"
+                    f"{datetime.datetime.now().strftime('%m/%d %H:%M')}"
+                )
 
             send(msg)
 
@@ -179,7 +180,7 @@ def run():
             import traceback
             traceback.print_exc()
 
-            send(f"⚠️ ERROR\nVer: {VERSION}\n{e}")
+            send(f"⚠️ エラー [{VERSION}]\n{e}")
 
         finally:
             log("🔒 END")
