@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.3-fixed-next"
+VERSION = "v6.4-safe-fallback"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -21,7 +21,7 @@ def send(msg):
 
 
 # =========================
-# hidden input解析（安定版）
+# hidden input解析
 # =========================
 def parse_hidden(page):
     elems = page.locator("input[name^='h_dlRepeat2']").all()
@@ -58,41 +58,47 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ遷移（修正版）
+# 次ページ（安全版）
 # =========================
-def go_next(page):
+def go_next_safe(page):
     log("⏭️ 次ページ")
 
-    # ① hiddenからターゲット取得
-    target = page.evaluate("""
-        () => {
-            const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
-            for (const el of inputs) {
-                if (el.name.includes("Migrated_lnkNextSpan")) {
-                    return el.name.replace("h_", "");
+    try:
+        target = page.evaluate("""
+            () => {
+                const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
+                for (const el of inputs) {
+                    if (el.name.includes("Migrated_lnkNextSpan")) {
+                        return el.name.replace("h_", "");
+                    }
                 }
+                return null;
             }
-            return null;
-        }
-    """)
+        """)
 
-    if not target:
-        raise Exception("NextSpan target not found")
+        if not target:
+            log("⚠️ next target not found")
+            return False
 
-    log(f"➡ POSTBACK TARGET: {target}")
+        log(f"➡ POSTBACK TARGET: {target}")
 
-    # ② postback（ここが重要：wait_for_load_stateだけに依存しない）
-    page.evaluate(f"__doPostBack('{target}','')")
+        before = page.content()
 
-    # ③ DOM更新待ち（2ページ目が空になる原因を潰す）
-    page.wait_for_function("""
-        () => {
-            const elems = document.querySelectorAll("input[name^='h_dlRepeat2']");
-            return elems.length > 0;
-        }
-    """, timeout=10000)
+        page.evaluate(f"__doPostBack('{target}','')")
 
-    page.wait_for_timeout(800)
+        # ★ ここが重要：更新検知に依存しない
+        for _ in range(10):
+            page.wait_for_timeout(500)
+            if page.content() != before:
+                log("✅ ページ更新検知")
+                return True
+
+        log("⚠️ 更新検知できず（続行）")
+        return True
+
+    except Exception as e:
+        log(f"⚠️ 次ページ失敗: {e}")
+        return False
 
 
 # =========================
@@ -131,15 +137,18 @@ def run():
             analyze(res1, "1P")
 
             # =========================
-            # 2ページ
+            # 2ページ（失敗しても続行）
             # =========================
-            go_next(page)
+            res2 = []
 
-            log("📑 2ページ目")
+            if go_next_safe(page):
+                log("📑 2ページ目")
 
-            res2 = parse_hidden(page)
-            log(f"2P: {res2}")
-            analyze(res2, "2P")
+                res2 = parse_hidden(page)
+                log(f"2P: {res2}")
+                analyze(res2, "2P")
+            else:
+                log("⚠️ 2ページ取得スキップ")
 
             # =========================
             # 集約
@@ -148,14 +157,14 @@ def run():
             log(f"📦 FINAL: {final}")
 
             # =========================
-            # 通知（VERSION付き）
+            # 通知（必ず実行）
             # =========================
-            header = f"[{VERSION}]"
-
             if any("○" in x or "△" in x for x in final):
-                msg = f"{header}\n@everyone\n🏸 空きあり\n" + "\n".join(final)
+                msg = f"""@everyone
+🏸 空きあり ({VERSION})
+""" + "\n".join(final)
             else:
-                msg = f"{header}\n🏸 空きなし"
+                msg = f"🏸 空きなし ({VERSION})"
 
             send(msg)
 
@@ -163,6 +172,9 @@ def run():
             log(f"🔥 ERROR: {e}")
             import traceback
             traceback.print_exc()
+
+            # ★ ここ重要：エラーでも通知
+            send(f"⚠️ エラー発生 ({VERSION})\n{e}")
 
         finally:
             log("🔒 END")
