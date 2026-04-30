@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.7-stable-fix"
+VERSION = "v7.8-dom-rebuild-stable"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -57,21 +57,26 @@ def analyze(results, label):
 
 
 # =========================
-# ★重要：DOM完全比較キー
+# ★重要：PostBack完了待ち（DOM再生成検知）
 # =========================
-def get_fingerprint(page):
-    links = page.locator("a[id*='lnkKoma']").all()
+def wait_postback(page):
+    # 1. DOMが一度消える（UpdatePanel対策）
+    page.wait_for_function(
+        """() => {
+            return document.querySelectorAll("a[id*='lnkKoma']").length === 0;
+        }""",
+        timeout=10000
+    )
 
-    items = []
-    for l in links:
-        try:
-            txt = l.inner_text()
-            txt = txt.replace("\xa0", "").replace(" ", "").strip()
-            items.append(txt)
-        except:
-            pass
+    # 2. DOMが再生成される
+    page.wait_for_function(
+        """() => {
+            return document.querySelectorAll("a[id*='lnkKoma']").length > 0;
+        }""",
+        timeout=15000
+    )
 
-    return "|".join(items)
+    page.wait_for_timeout(500)
 
 
 # =========================
@@ -79,9 +84,6 @@ def get_fingerprint(page):
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
-
-    before = get_fingerprint(page)
-    log(f"📍 before fp size: {len(before)}")
 
     target = page.evaluate("""
         () => {
@@ -99,23 +101,9 @@ def go_next(page):
     try:
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★完全一致待ち（ここが修正本体）
-        page.wait_for_function(
-            """(args) => {
-                const els = Array.from(document.querySelectorAll("a[id*='lnkKoma']"));
-                if (els.length === 0) return false;
+        # ★ここが本体（比較完全廃止）
+        wait_postback(page)
 
-                const now = els.map(e =>
-                    e.innerText.replace(/\\s/g,'').replace(/\\u00a0/g,'')
-                ).join('|');
-
-                return now !== args.before;
-            }""",
-            arg={"before": before},
-            timeout=15000
-        )
-
-        page.wait_for_timeout(500)
         log("✅ 2ページ描画完了")
         return True
 
