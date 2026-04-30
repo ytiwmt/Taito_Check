@@ -4,12 +4,15 @@ import os
 import re
 import datetime
 
-VERSION = "v7.14-content-diff-stable"
+VERSION = "v7.15-viewstate-stable-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
+# =========================
+# ログ
+# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
@@ -25,7 +28,7 @@ def send(msg):
 
 
 # =========================
-# 解析
+# データ抽出
 # =========================
 def parse(page):
     results = []
@@ -49,30 +52,28 @@ def parse(page):
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
     ng = [r for r in results if "×" in r]
-
     log(f"{label}: ○△={len(ok)} / ×={len(ng)}")
 
 
 # =========================
-# ★状態スナップショット
+# ★VIEWSTATE取得（本体）
 # =========================
-def snapshot(page):
+def get_viewstate(page):
     return page.evaluate("""
         () => {
-            return Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
-                .map(a => a.innerText.replace(/\\s/g,''))
-                .join('|');
+            const el = document.querySelector("input[name='__VIEWSTATE']");
+            return el ? el.value.slice(0, 200) : "";
         }
     """)
 
 
 # =========================
-# 次ページ（最終版）
+# 次ページ（最終安定版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
 
-    before = snapshot(page)
+    before_vs = get_viewstate(page)
 
     target = page.evaluate("""
         () => {
@@ -85,26 +86,25 @@ def go_next(page):
         log("⚠️ NextSpanなし")
         return False
 
-    log("➡ CLICK POSTBACK")
+    log("➡ POSTBACK実行")
 
     try:
-        # ★クリックではなくASP.NETイベント直接実行（安定優先）
+        # ASP.NETイベント発火
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★本質：DOMではなく中身差分を見る
+        # ★唯一の正解：VIEWSTATE変化待ち
         page.wait_for_function(
             """(prev) => {
-                const now = Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
-                    .map(a => a.innerText.replace(/\\s/g,''))
-                    .join('|');
-
-                return now && now !== prev;
+                const el = document.querySelector("input[name='__VIEWSTATE']");
+                return el && el.value.slice(0,200) !== prev;
             }""",
-            arg=before,
+            arg=before_vs,
             timeout=20000
         )
 
-        log("✅ 2ページ更新検知完了")
+        page.wait_for_timeout(500)
+
+        log("✅ 遷移（VIEWSTATE更新）成功")
         return True
 
     except Exception as e:
@@ -125,6 +125,7 @@ def run():
         final = []
 
         try:
+            # 初期遷移
             page.goto(BASE_URL)
 
             page.locator("input[value='公共施設予約メニュー']").click()
@@ -139,14 +140,18 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # 1P
+            # =========================
+            # 1ページ目
+            # =========================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # 2P
+            # =========================
+            # 2ページ目
+            # =========================
             if go_next(page):
                 log("📑 2ページ目")
                 res2 = parse(page)
@@ -156,7 +161,9 @@ def run():
             else:
                 log("⚠️ 2ページ取得失敗")
 
+            # =========================
             # 集約
+            # =========================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -164,6 +171,9 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
+            # =========================
+            # 通知
+            # =========================
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
