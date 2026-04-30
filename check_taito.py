@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v6.1-final"
+VERSION = "v6.2-dynamic-postback"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -21,7 +21,7 @@ def send(msg):
 
 
 # =========================
-# hidden input解析（最重要）
+# hidden input解析（完全版）
 # =========================
 def parse_hidden(page):
     elems = page.locator("input[name^='h_dlRepeat2']").all()
@@ -58,18 +58,33 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ遷移（PostBack）
+# 次ページ遷移（動的PostBack）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ")
+
+    target = page.evaluate("""
+        () => {
+            const inputs = Array.from(document.querySelectorAll("input[name^='h_dlRepeat2']"));
+            for (const el of inputs) {
+                if (el.name.includes("Migrated_lnkNextSpan")) {
+                    return el.name.replace("h_", "");
+                }
+            }
+            return null;
+        }
+    """)
+
+    if not target:
+        raise Exception("NextSpan target not found")
+
+    log(f"➡ POSTBACK TARGET: {target}")
 
     with page.expect_response(
         lambda r: "Wg_ShisetsubetsuAkiJoukyou" in r.url,
         timeout=10000
     ):
-        page.evaluate("""
-            __doPostBack('dlRepeat2$ctl01$tpItem2$lnkNextSpan','')
-        """)
+        page.evaluate(f"__doPostBack('{target}','')")
 
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(500)
@@ -102,16 +117,16 @@ def run():
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ目
+            # 1ページ
             # =========================
             log("📑 1ページ目")
 
             res1 = parse_hidden(page)
             log(f"1P: {res1}")
-            status1 = analyze(res1, "1P")
+            analyze(res1, "1P")
 
             # =========================
-            # 2ページ目
+            # 2ページ
             # =========================
             go_next(page)
 
@@ -119,10 +134,10 @@ def run():
 
             res2 = parse_hidden(page)
             log(f"2P: {res2}")
-            status2 = analyze(res2, "2P")
+            analyze(res2, "2P")
 
             # =========================
-            # 結果集約
+            # 集約
             # =========================
             final = sorted(set(res1 + res2))
             log(f"📦 FINAL: {final}")
