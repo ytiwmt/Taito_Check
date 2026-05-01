@@ -4,14 +4,14 @@ import os
 import re
 import datetime
 
-VERSION = "v7.15-viewstate-stable-final"
+VERSION = "v7.18-single-page-safe"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
 
 # =========================
-# ログ
+# log
 # =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
@@ -28,23 +28,19 @@ def send(msg):
 
 
 # =========================
-# データ抽出
+# parse
 # =========================
 def parse(page):
     results = []
 
-    links = page.locator("a[id*='lnkKoma']").all()
-
-    for l in links:
+    for a in page.locator("a[id*='lnkKoma']").all():
         try:
-            txt = l.inner_text()
-            txt = txt.replace("\xa0", "").replace(" ", "").strip()
+            txt = a.inner_text().replace("\xa0", "").replace(" ", "").strip()
+            m = re.search(r"(\d+)(○|△|×)", txt)
+            if m:
+                results.append(f"{m.group(1)}{m.group(2)}")
         except:
-            continue
-
-        m = re.search(r"(\d+)(○|△|×)", txt)
-        if m:
-            results.append(f"{m.group(1)}{m.group(2)}")
+            pass
 
     return results
 
@@ -56,24 +52,10 @@ def analyze(results, label):
 
 
 # =========================
-# ★VIEWSTATE取得（本体）
-# =========================
-def get_viewstate(page):
-    return page.evaluate("""
-        () => {
-            const el = document.querySelector("input[name='__VIEWSTATE']");
-            return el ? el.value.slice(0, 200) : "";
-        }
-    """)
-
-
-# =========================
-# 次ページ（最終安定版）
+# 次ページ（存在チェック型）
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ")
-
-    before_vs = get_viewstate(page)
+    log("⏭️ 次ページ判定")
 
     target = page.evaluate("""
         () => {
@@ -82,29 +64,20 @@ def go_next(page):
         }
     """)
 
+    # ★ここがv7.18の核心
     if not target:
-        log("⚠️ NextSpanなし")
+        log("➡ 2ページ目なし（月末状態）")
         return False
 
-    log("➡ POSTBACK実行")
+    log(f"➡ POSTBACK: {target}")
 
     try:
-        # ASP.NETイベント発火
         page.evaluate(f"__doPostBack('{target}','')")
 
-        # ★唯一の正解：VIEWSTATE変化待ち
-        page.wait_for_function(
-            """(prev) => {
-                const el = document.querySelector("input[name='__VIEWSTATE']");
-                return el && el.value.slice(0,200) !== prev;
-            }""",
-            arg=before_vs,
-            timeout=20000
-        )
+        # ★検知しない、固定待機のみ
+        page.wait_for_timeout(2500)
 
-        page.wait_for_timeout(500)
-
-        log("✅ 遷移（VIEWSTATE更新）成功")
+        log("✅ 遷移試行完了")
         return True
 
     except Exception as e:
@@ -113,7 +86,7 @@ def go_next(page):
 
 
 # =========================
-# メイン
+# main
 # =========================
 def run():
     with sync_playwright() as p:
@@ -125,9 +98,9 @@ def run():
         final = []
 
         try:
-            # 初期遷移
             page.goto(BASE_URL)
 
+            # 初期操作
             page.locator("input[value='公共施設予約メニュー']").click()
             page.locator("input[value^='1. 空き照会']").click()
             page.locator("input[value='次頁']").click()
@@ -140,40 +113,40 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # =========================
-            # 1ページ目
-            # =========================
+            # =====================
+            # 1P
+            # =====================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # =========================
-            # 2ページ目
-            # =========================
+            # =====================
+            # 2P（あれば）
+            # =====================
             if go_next(page):
-                log("📑 2ページ目")
+                log("📑 2ページ目（存在）")
+
+                # 念のため再取得
                 res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
                 final.extend(res2)
-            else:
-                log("⚠️ 2ページ取得失敗")
 
-            # =========================
+            # =====================
             # 集約
-            # =========================
+            # =====================
             final_unique = sorted(
-                list(set(final)),
+                set(final),
                 key=lambda x: int(re.sub(r"\D", "", x))
             )
 
             log(f"📦 FINAL: {final_unique}")
 
-            # =========================
+            # =====================
             # 通知
-            # =========================
+            # =====================
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
@@ -199,5 +172,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-これをベースにやれよばか
