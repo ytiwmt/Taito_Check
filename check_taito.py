@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.19-content-check-final"
+VERSION = "v7.20-valid-page-check-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -52,12 +52,11 @@ def analyze(results, label):
 
 
 # =========================
-# 次ページ判定（v7.19核心）
+# 次ページ判定（完全版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ判定")
 
-    # ★ 現在内容スナップショット
     before = page.evaluate("""
         () => Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
             .map(a => a.innerText.replace(/\\s/g,''))
@@ -79,21 +78,26 @@ def go_next(page):
 
     try:
         page.evaluate(f"__doPostBack('{target}','')")
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(3000)
 
-        # ★ 遷移後スナップショット
         after = page.evaluate("""
             () => Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
                 .map(a => a.innerText.replace(/\\s/g,''))
                 .join('|')
         """)
 
-        # ★ ここが全て
-        if after == before:
-            log("➡ 実質単ページ（変化なし）")
+        # =========================
+        # ★ここが最重要
+        # =========================
+        if not after:
+            log("➡ 空ページ（遷移失敗扱い）")
             return False
 
-        log("✅ 実ページ遷移あり")
+        if after == before:
+            log("➡ 単ページ（変化なし）")
+            return False
+
+        log("✅ 有効ページ遷移")
         return True
 
     except Exception as e:
@@ -139,7 +143,7 @@ def run():
             final.extend(res1)
 
             # =====================
-            # 2P（変化があればのみ）
+            # 2P（有効な場合のみ）
             # =====================
             if go_next(page):
                 log("📑 2ページ目")
@@ -150,7 +154,7 @@ def run():
                 final.extend(res2)
 
             # =====================
-            # 集約
+            # 集約（重複排除）
             # =====================
             final_unique = sorted(
                 set(final),
