@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.20-valid-page-check-final"
+VERSION = "v7.21-lottery-support-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -28,7 +28,7 @@ def send(msg):
 
 
 # =========================
-# parse
+# parse（★抽選対応）
 # =========================
 def parse(page):
     results = []
@@ -36,23 +36,44 @@ def parse(page):
     for a in page.locator("a[id*='lnkKoma']").all():
         try:
             txt = a.inner_text().replace("\xa0", "").replace(" ", "").strip()
-            m = re.search(r"(\d+)(○|△|×)", txt)
-            if m:
-                results.append(f"{m.group(1)}{m.group(2)}")
         except:
-            pass
+            continue
+
+        day_match = re.search(r"\d+", txt)
+        if not day_match:
+            continue
+
+        day = day_match.group(0)
+
+        if "○" in txt:
+            status = "○"
+        elif "△" in txt:
+            status = "△"
+        elif "×" in txt:
+            status = "×"
+        elif "抽選" in txt:
+            status = "抽選"
+        else:
+            continue
+
+        results.append(f"{day}{status}")
 
     return results
 
 
+# =========================
+# analyze（抽選追加）
+# =========================
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
+    lottery = [r for r in results if "抽選" in r]
     ng = [r for r in results if "×" in r]
-    log(f"{label}: ○△={len(ok)} / ×={len(ng)}")
+
+    log(f"{label}: ○△={len(ok)} / 抽選={len(lottery)} / ×={len(ng)}")
 
 
 # =========================
-# 次ページ判定（完全版）
+# 次ページ判定（現実対応版）
 # =========================
 def go_next(page):
     log("⏭️ 次ページ判定")
@@ -86,15 +107,15 @@ def go_next(page):
                 .join('|')
         """)
 
-        # =========================
-        # ★ここが最重要
-        # =========================
-        if not after:
-            log("➡ 空ページ（遷移失敗扱い）")
+        # 空でも「抽選だけのページ」があり得るので parseで判定する
+        parsed = parse(page)
+
+        if not parsed:
+            log("➡ データなし（無効）")
             return False
 
         if after == before:
-            log("➡ 単ページ（変化なし）")
+            log("➡ 同一ページ")
             return False
 
         log("✅ 有効ページ遷移")
@@ -120,7 +141,6 @@ def run():
         try:
             page.goto(BASE_URL)
 
-            # 初期操作
             page.locator("input[value='公共施設予約メニュー']").click()
             page.locator("input[value^='1. 空き照会']").click()
             page.locator("input[value='次頁']").click()
@@ -133,29 +153,22 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # =====================
             # 1P
-            # =====================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # =====================
-            # 2P（有効な場合のみ）
-            # =====================
+            # 2P
             if go_next(page):
                 log("📑 2ページ目")
-
                 res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
                 final.extend(res2)
 
-            # =====================
-            # 集約（重複排除）
-            # =====================
+            # 集約
             final_unique = sorted(
                 set(final),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -163,9 +176,7 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # =====================
             # 通知
-            # =====================
             if any("○" in x or "△" in x for x in final_unique):
                 msg = (
                     f"@everyone\n"
