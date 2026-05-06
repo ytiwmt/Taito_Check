@@ -1,55 +1,64 @@
 import requests
 import os
+import re
 from playwright.sync_api import sync_playwright
 
-WEBHOOK_URL_Taito = os.getenv("WEBHOOK_URL_Taito")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
+
 
 def log(msg):
     print(msg, flush=True)
 
-def send_discord(message):
-    if not WEBHOOK_URL_Taito:
-        log("【Webhook未設定】")
-        log(message)
-        return
-    try:
-        requests.post(WEBHOOK_URL_Taito, json={"content": message}, timeout=10)
-    except Exception as e:
-        log(f"送信エラー: {e}")
 
-def get_table_signature(page):
-    """ページが変わったか判定するための署名"""
+def send(msg):
+    log("送信内容:\n" + msg)
+    if WEBHOOK_URL:
+        try:
+            requests.post(WEBHOOK_URL, json={"content": msg}, timeout=10)
+        except Exception as e:
+            log(f"送信エラー: {e}")
+
+
+# =========================
+# ページ署名（遷移判定）
+# =========================
+def get_signature(page):
     try:
-        text = page.locator("table").first.inner_text()
-        return hash(text)
+        txt = page.locator("table").first.inner_text()
+        return hash(txt)
     except:
         return None
 
-def scan_vacancy(page, label):
-    log(f"--- {label} スキャン開始 ---")
 
-    tables = page.locator("table").all()
+# =========================
+# 抽出（修正版）
+# =========================
+def parse(page, label):
+    log(f"--- {label} 解析開始 ---")
+
     results = []
+    tables = page.locator("table").all()
 
     for i, tbl in enumerate(tables):
         try:
-            txt = tbl.inner_text()
+            t = tbl.inner_text()
         except:
             continue
 
-        if "体育館" not in txt:
+        if "体育館" not in t:
             continue
 
-        log(f"[{label}] 対象テーブル検出 index={i}")
+        log(f"[{label}] テーブル検出 index={i}")
 
         for cell in tbl.locator("td").all():
             try:
-                t = cell.inner_text().strip()
+                txt = cell.inner_text().strip()
             except:
                 continue
 
-            if t in ["○", "△"]:
+            # ★ここが重要
+            if re.search(r"(○|△)", txt):
                 row = cell.locator("xpath=..").inner_text()
                 row = " ".join(row.split())
                 results.append(row)
@@ -58,8 +67,10 @@ def scan_vacancy(page, label):
     return results
 
 
-def navigate_base(page):
-    """共通遷移"""
+# =========================
+# 共通遷移
+# =========================
+def navigate(page):
     page.goto(BASE_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(3000)
 
@@ -102,7 +113,46 @@ def navigate_base(page):
     page.wait_for_timeout(3000)
 
 
-def run_check():
+# =========================
+# 次ページ（POSTBACK確定版）
+# =========================
+def go_next(page):
+    log("⏭️ 次ページ（POSTBACK直叩き）")
+
+    before = get_signature(page)
+    log(f"遷移前署名: {before}")
+
+    try:
+        page.evaluate("""
+            __doPostBack('dlRepeat2$ctl00$tpItem2$Migrated_lnkNextSpan','')
+        """)
+
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(3000)
+
+        after = get_signature(page)
+        log(f"遷移後署名: {after}")
+
+        if after is None:
+            log("❌ テーブル取得不可 → 遷移失敗")
+            return False
+
+        if before == after:
+            log("⚠️ 同一ページ → 遷移失敗")
+            return False
+
+        log("✅ 遷移成功")
+        return True
+
+    except Exception as e:
+        log(f"❌ 遷移例外: {e}")
+        return False
+
+
+# =========================
+# メイン
+# =========================
+def run():
     headless = os.getenv("GITHUB_ACTIONS") == "true"
 
     with sync_playwright() as p:
@@ -111,54 +161,35 @@ def run_check():
         page = context.new_page()
 
         try:
-            log("=== 1周目（現在月）===")
-            navigate_base(page)
+            log("=== 1ページ目 ===")
+            navigate(page)
 
-            sig1 = get_table_signature(page)
-            log(f"1ページ署名: {sig1}")
+            res1 = parse(page, "1P")
 
-            res1 = scan_vacancy(page, "1P")
-
-            # -------------------------
-            # 2周目（次期間）
-            # -------------------------
-            log("=== 次期間ボタン押下 ===")
-
-            btn = page.locator("#btnNextPeriod")
-            if btn.count() == 0:
-                log("❌ btnNextPeriodが見つからない")
-            else:
-                btn.first.click()
-                page.wait_for_load_state("networkidle")
-                page.wait_for_timeout(3000)
-
-                sig2 = get_table_signature(page)
-                log(f"2ページ署名: {sig2}")
-
-                if sig1 == sig2:
-                    log("⚠️ ページ変化なし（＝遷移失敗）")
-                else:
-                    log("✅ ページ変化あり（遷移成功）")
-
-                res2 = scan_vacancy(page, "2P")
+            # =========================
+            # 2ページ目
+            # =========================
+            if go_next(page):
+                res2 = parse(page, "2P")
                 res1.extend(res2)
+            else:
+                log("⚠️ 2ページ取得失敗")
 
-            # -------------------------
-            # 結果
-            # -------------------------
+            # =========================
+            # 集約
+            # =========================
             final = list(dict.fromkeys(res1))
-
-            log(f"最終件数: {len(final)}")
+            log(f"📦 FINAL件数: {len(final)}")
 
             if final:
                 msg = "🏸 空きあり\n\n" + "\n".join(final)
             else:
                 msg = "🏸 空きなし"
 
-            send_discord(msg)
+            send(msg)
 
         except Exception as e:
-            log(f"エラー: {e}")
+            log(f"🔥 ERROR: {e}")
             page.screenshot(path="error.png", full_page=True)
 
         finally:
@@ -166,4 +197,4 @@ def run_check():
 
 
 if __name__ == "__main__":
-    run_check()
+    run()
