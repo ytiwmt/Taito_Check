@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.25-eventtarget-direct"
+VERSION = "v7.27-form-submit-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
@@ -64,16 +64,38 @@ def get_vs(page):
 
 
 # =========================
-# ★ 正解ロジック
+# ★本命：submitで遷移
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ（__EVENTTARGET直叩き）")
+    log("⏭️ 次ページ（form.submit）")
 
     before_vs = get_vs(page)
 
     try:
-        # ★これだけでいい
-        page.evaluate("__doPostBack('btnNextPeriod','')")
+        page.evaluate("""
+            () => {
+                const form = document.forms[0];
+                if (!form) return;
+
+                // ASP.NET用イベント指定
+                const target = document.querySelector("[id*='Next']");
+
+                if (target) {
+                    const name = target.name || target.id.replace(/_/g, '$');
+
+                    let ev = document.querySelector("input[name='__EVENTTARGET']");
+                    if (!ev) {
+                        ev = document.createElement("input");
+                        ev.type = "hidden";
+                        ev.name = "__EVENTTARGET";
+                        form.appendChild(ev);
+                    }
+                    ev.value = name;
+                }
+
+                form.submit();
+            }
+        """)
 
         # VIEWSTATE変化待ち
         page.wait_for_function(
@@ -87,11 +109,10 @@ def go_next(page):
 
         page.wait_for_timeout(500)
 
-        # ページ内容変化チェック（保険）
         count = page.locator("a[id*='lnkKoma']").count()
 
         if count == 0:
-            log("⚠️ データなし（次月未公開 or 空）")
+            log("⚠️ データなし（未公開 or 空）")
             return "empty"
 
         log("✅ 遷移成功")
@@ -129,18 +150,14 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # =========================
             # 1ページ
-            # =========================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # =========================
             # 2ページ
-            # =========================
             status = go_next(page)
 
             if status == "ok":
@@ -158,9 +175,7 @@ def run():
             else:
                 log("⚠️ 遷移失敗")
 
-            # =========================
             # 集約
-            # =========================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -168,9 +183,7 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # =========================
             # 通知
-            # =========================
             if any(("○" in x or "△" in x) for x in final_unique):
                 msg = (
                     f"@everyone\n"
