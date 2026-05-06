@@ -4,11 +4,14 @@ import os
 import re
 import datetime
 
-VERSION = "v7.23-real-event-trigger"
+VERSION = "v7.24-submit-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
+# =========================
+# ログ
+# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
@@ -56,28 +59,32 @@ def get_vs(page):
     """)
 
 # =========================
-# ★本物の遷移
+# 次ページ（完全版）
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ（イベント強制発火）")
+    log("⏭️ 次ページ（submit + EVENTTARGET）")
 
     before_vs = get_vs(page)
 
     try:
-        # ★ここが核心
         page.evaluate("""
             () => {
                 const btn = document.getElementById("btnNextPeriod");
                 if (!btn) return;
 
-                // mouseDown
-                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                const form = btn.closest("form");
+                if (!form) return;
 
-                // mouseUp
-                btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                // EVENTTARGET設定
+                const et = form.querySelector("input[name='__EVENTTARGET']");
+                if (et) et.value = "btnNextPeriod";
 
-                // click
-                btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                // EVENTARGUMENTクリア
+                const ea = form.querySelector("input[name='__EVENTARGUMENT']");
+                if (ea) ea.value = "";
+
+                // submit
+                form.submit();
             }
         """)
 
@@ -127,14 +134,18 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
+            # =========================
             # 1ページ
+            # =========================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
+            # =========================
             # 2ページ
+            # =========================
             if go_next(page):
                 res2 = parse(page)
 
@@ -148,7 +159,9 @@ def run():
             else:
                 log("⚠️ 遷移失敗")
 
+            # =========================
             # 集約
+            # =========================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -156,7 +169,9 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
+            # =========================
             # 通知
+            # =========================
             if any(("○" in x or "△" in x) for x in final_unique):
                 msg = (
                     f"@everyone\n"
