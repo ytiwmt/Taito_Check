@@ -1,164 +1,103 @@
-import requests
-from playwright.sync_api import sync_playwright
-import os
-import re
-import datetime
+def run_check():
+    headless = os.getenv("GITHUB_ACTIONS") == "true"
 
-VERSION = "v7.30-btnNextPeriod-final"
-
-WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
-BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
-
-# =========================
-# ログ
-# =========================
-def log(msg):
-    now = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"[{now}] {msg}")
-
-def send(msg):
-    log(f"送信内容:\n{msg}")
-    if WEBHOOK_URL:
-        try:
-            requests.post(WEBHOOK_URL, json={"content": msg})
-        except Exception as e:
-            log(f"❌ Webhook失敗: {e}")
-
-# =========================
-# 解析
-# =========================
-def parse(page):
-    results = []
-    links = page.locator("a[id*='lnkKoma']").all()
-
-    for l in links:
-        try:
-            txt = l.inner_text()
-            txt = txt.replace("\xa0", "").replace(" ", "").strip()
-        except:
-            continue
-
-        m = re.search(r"(\d+)(○|△|×|抽選)", txt)
-        if m:
-            results.append(f"{m.group(1)}{m.group(2)}")
-
-    return results
-
-def analyze(results, label):
-    ok = [r for r in results if "○" in r or "△" in r]
-    lot = [r for r in results if "抽選" in r]
-    ng = [r for r in results if "×" in r]
-    log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
-
-# =========================
-# 次ページ
-# =========================
-def go_next(page):
-    log("⏭️ 次ページ（btnNextPeriod直クリック）")
-
-    try:
-        before = page.locator("a[id*='lnkKoma']").count()
-
-        page.locator("#btnNextPeriod").click()
-
-        page.wait_for_function(
-            """(prev) => {
-                return document.querySelectorAll("a[id*='lnkKoma']").length !== prev;
-            }""",
-            arg=before,
-            timeout=15000
-        )
-
-        page.wait_for_timeout(500)
-
-        log("✅ 遷移成功")
-        return True
-
-    except Exception as e:
-        log(f"❌ 遷移失敗: {e}")
-        return False
-
-# =========================
-# メイン
-# =========================
-def run():
     with sync_playwright() as p:
-        log(f"🚀 {VERSION}")
-
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-
-        final = []
+        browser = p.chromium.launch(headless=headless, args=["--no-sandbox"])
+        context = browser.new_context(
+            user_agent="Mozilla/5.0",
+            viewport={"width": 1280, "height": 800}
+        )
+        page = context.new_page()
 
         try:
+            print("アクセス")
             page.goto(BASE_URL)
+            page.wait_for_timeout(3000)
 
-            page.locator("input[value='公共施設予約メニュー']").click()
-            page.locator("input[value^='1. 空き照会']").click()
-            page.locator("input[value='次頁']").click()
-            page.locator("input[value='柳北スポーツプラザ']").click()
+            # ===== 通常遷移 =====
+            page.locator("input[type='submit']", has_text="公共施設予約メニュー").click()
+            page.wait_for_timeout(2000)
+
+            page.locator("input[type='submit']", has_text="空き照会").click()
+            page.wait_for_timeout(2000)
+
+            page.locator("input[type='submit']", has_text="次頁").click()
+            page.wait_for_timeout(3000)
+
+            page.locator("input[type='submit']", has_text="柳北").click()
+            page.wait_for_timeout(2000)
+
             page.locator("input[name='ucPCFooter$btnForward']").click()
+            page.wait_for_timeout(2000)
 
-            page.locator("input[value='カレンダー']").click()
-            page.locator("input[value='1ヶ月']").click()
+            page.locator("input[type='submit']", has_text="カレンダー").click()
+            page.wait_for_timeout(2000)
+
+            page.locator("input[type='submit']", has_text="1ヶ月").click()
+            page.wait_for_timeout(2000)
+
             page.locator("input[name='ucPCFooter$btnForward']").click()
+            page.wait_for_timeout(3000)
 
-            page.wait_for_load_state("networkidle")
+            # 体育館クリック
+            page.locator("span:has-text('体育館')").click()
+            page.wait_for_timeout(3000)
+
+            all_vacant_info = []
+
+            def scan(label):
+                print(f"スキャン: {label}")
+                tables = page.locator("table").all()
+
+                for tbl in tables:
+                    if "体育館" not in tbl.inner_text():
+                        continue
+
+                    for cell in tbl.locator("td").all():
+                        txt = cell.inner_text().strip()
+                        if txt in ["○", "△"]:
+                            row = cell.locator("xpath=..").inner_text()
+                            all_vacant_info.append(" ".join(row.split()))
 
             # =========================
-            # 1ページ目
+            # ① 1ページ目
             # =========================
-            log("📑 1ページ目")
-            res1 = parse(page)
-            log(f"1P: {res1}")
-            analyze(res1, "1P")
-            final.extend(res1)
+            scan("現在")
 
             # =========================
-            # 2ページ目
+            # ② 次期間（ここだけ追加）
             # =========================
-            if go_next(page):
-                log("📑 2ページ目")
-                res2 = parse(page)
-                log(f"2P: {res2}")
-                analyze(res2, "2P")
-                final.extend(res2)
-            else:
-                log("⚠️ 2ページ取得失敗")
+            btn = page.locator("#btnNextPeriod")
+
+            if btn.count() > 0:
+                print("次期間クリック")
+
+                before = page.inner_text("body")
+
+                btn.click()
+                page.wait_for_timeout(3000)
+
+                after = page.inner_text("body")
+
+                if before != after:
+                    scan("次期間")
+                else:
+                    print("変化なし（= 次ページなし or 同一表示）")
 
             # =========================
             # 集約
             # =========================
-            final_unique = sorted(
-                list(set(final)),
-                key=lambda x: int(re.sub(r"\D", "", x))
-            )
+            final = list(dict.fromkeys(all_vacant_info))
 
-            log(f"📦 FINAL: {final_unique}")
-
-            # =========================
-            # 通知
-            # =========================
-            if any(("○" in x or "△" in x) for x in final_unique):
-                msg = (
-                    f"@everyone\n"
-                    f"🏸 空きあり [{VERSION}]\n"
-                    f"{len(final_unique)}件\n"
-                    f"```\n" + "\n".join(final_unique) + "\n```"
-                )
+            if final:
+                msg = "🏸 空きあり\n\n" + "\n".join(final)
             else:
-                msg = f"🏸 空きなし [{VERSION}]"
+                msg = "🏸 空きなし"
 
-            send(msg)
+            send_discord(msg)
 
         except Exception as e:
-            log(f"🔥 ERROR: {e}")
-            send(f"⚠️ エラー [{VERSION}]\n{e}")
+            print("エラー:", e)
 
         finally:
-            log("🔒 END")
             browser.close()
-
-
-if __name__ == "__main__":
-    run()
