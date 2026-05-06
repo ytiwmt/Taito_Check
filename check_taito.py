@@ -4,16 +4,17 @@ import os
 import re
 import datetime
 
-VERSION = "v7.27-form-submit-final"
+VERSION = "v7.30-btnNextPeriod-final"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
-
+# =========================
+# ログ
+# =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
-
 
 def send(msg):
     log(f"送信内容:\n{msg}")
@@ -23,13 +24,11 @@ def send(msg):
         except Exception as e:
             log(f"❌ Webhook失敗: {e}")
 
-
 # =========================
-# parse
+# 解析
 # =========================
 def parse(page):
     results = []
-
     links = page.locator("a[id*='lnkKoma']").all()
 
     for l in links:
@@ -45,86 +44,42 @@ def parse(page):
 
     return results
 
-
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
     lot = [r for r in results if "抽選" in r]
     ng = [r for r in results if "×" in r]
-
     log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
 
-
 # =========================
-# VIEWSTATE
-# =========================
-def get_vs(page):
-    return page.evaluate("""
-        () => document.querySelector("input[name='__VIEWSTATE']")?.value || ""
-    """)
-
-
-# =========================
-# ★本命：submitで遷移
+# 次ページ
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ（form.submit）")
-
-    before_vs = get_vs(page)
+    log("⏭️ 次ページ（btnNextPeriod直クリック）")
 
     try:
-        page.evaluate("""
-            () => {
-                const form = document.forms[0];
-                if (!form) return;
+        before = page.locator("a[id*='lnkKoma']").count()
 
-                // ASP.NET用イベント指定
-                const target = document.querySelector("[id*='Next']");
+        page.locator("#btnNextPeriod").click()
 
-                if (target) {
-                    const name = target.name || target.id.replace(/_/g, '$');
-
-                    let ev = document.querySelector("input[name='__EVENTTARGET']");
-                    if (!ev) {
-                        ev = document.createElement("input");
-                        ev.type = "hidden";
-                        ev.name = "__EVENTTARGET";
-                        form.appendChild(ev);
-                    }
-                    ev.value = name;
-                }
-
-                form.submit();
-            }
-        """)
-
-        # VIEWSTATE変化待ち
         page.wait_for_function(
             """(prev) => {
-                const el = document.querySelector("input[name='__VIEWSTATE']");
-                return el && el.value !== prev;
+                return document.querySelectorAll("a[id*='lnkKoma']").length !== prev;
             }""",
-            arg=before_vs,
+            arg=before,
             timeout=15000
         )
 
         page.wait_for_timeout(500)
 
-        count = page.locator("a[id*='lnkKoma']").count()
-
-        if count == 0:
-            log("⚠️ データなし（未公開 or 空）")
-            return "empty"
-
         log("✅ 遷移成功")
-        return "ok"
+        return True
 
     except Exception as e:
         log(f"❌ 遷移失敗: {e}")
-        return "fail"
-
+        return False
 
 # =========================
-# main
+# メイン
 # =========================
 def run():
     with sync_playwright() as p:
@@ -150,32 +105,30 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # 1ページ
+            # =========================
+            # 1ページ目
+            # =========================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # 2ページ
-            status = go_next(page)
-
-            if status == "ok":
-                res2 = parse(page)
-
+            # =========================
+            # 2ページ目
+            # =========================
+            if go_next(page):
                 log("📑 2ページ目")
+                res2 = parse(page)
                 log(f"2P: {res2}")
                 analyze(res2, "2P")
-
                 final.extend(res2)
-
-            elif status == "empty":
-                log("ℹ️ 次月未公開（正常）")
-
             else:
-                log("⚠️ 遷移失敗")
+                log("⚠️ 2ページ取得失敗")
 
+            # =========================
             # 集約
+            # =========================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -183,7 +136,9 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
+            # =========================
             # 通知
+            # =========================
             if any(("○" in x or "△" in x) for x in final_unique):
                 msg = (
                     f"@everyone\n"
