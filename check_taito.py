@@ -4,17 +4,16 @@ import os
 import re
 import datetime
 
-VERSION = "v7.24-submit-final"
+VERSION = "v7.25-eventtarget-direct"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
-# =========================
-# ログ
-# =========================
+
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
+
 
 def send(msg):
     log(f"送信内容:\n{msg}")
@@ -24,11 +23,13 @@ def send(msg):
         except Exception as e:
             log(f"❌ Webhook失敗: {e}")
 
+
 # =========================
-# 解析
+# parse
 # =========================
 def parse(page):
     results = []
+
     links = page.locator("a[id*='lnkKoma']").all()
 
     for l in links:
@@ -44,11 +45,14 @@ def parse(page):
 
     return results
 
+
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
     lot = [r for r in results if "抽選" in r]
     ng = [r for r in results if "×" in r]
+
     log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
+
 
 # =========================
 # VIEWSTATE
@@ -58,35 +62,18 @@ def get_vs(page):
         () => document.querySelector("input[name='__VIEWSTATE']")?.value || ""
     """)
 
+
 # =========================
-# 次ページ（完全版）
+# ★ 正解ロジック
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ（submit + EVENTTARGET）")
+    log("⏭️ 次ページ（__EVENTTARGET直叩き）")
 
     before_vs = get_vs(page)
 
     try:
-        page.evaluate("""
-            () => {
-                const btn = document.getElementById("btnNextPeriod");
-                if (!btn) return;
-
-                const form = btn.closest("form");
-                if (!form) return;
-
-                // EVENTTARGET設定
-                const et = form.querySelector("input[name='__EVENTTARGET']");
-                if (et) et.value = "btnNextPeriod";
-
-                // EVENTARGUMENTクリア
-                const ea = form.querySelector("input[name='__EVENTARGUMENT']");
-                if (ea) ea.value = "";
-
-                // submit
-                form.submit();
-            }
-        """)
+        # ★これだけでいい
+        page.evaluate("__doPostBack('btnNextPeriod','')")
 
         # VIEWSTATE変化待ち
         page.wait_for_function(
@@ -100,15 +87,23 @@ def go_next(page):
 
         page.wait_for_timeout(500)
 
+        # ページ内容変化チェック（保険）
+        count = page.locator("a[id*='lnkKoma']").count()
+
+        if count == 0:
+            log("⚠️ データなし（次月未公開 or 空）")
+            return "empty"
+
         log("✅ 遷移成功")
-        return True
+        return "ok"
 
     except Exception as e:
         log(f"❌ 遷移失敗: {e}")
-        return False
+        return "fail"
+
 
 # =========================
-# メイン
+# main
 # =========================
 def run():
     with sync_playwright() as p:
@@ -146,16 +141,20 @@ def run():
             # =========================
             # 2ページ
             # =========================
-            if go_next(page):
+            status = go_next(page)
+
+            if status == "ok":
                 res2 = parse(page)
 
-                if res2:
-                    log("📑 2ページ目")
-                    log(f"2P: {res2}")
-                    analyze(res2, "2P")
-                    final.extend(res2)
-                else:
-                    log("⚠️ 次月データなし（正常）")
+                log("📑 2ページ目")
+                log(f"2P: {res2}")
+                analyze(res2, "2P")
+
+                final.extend(res2)
+
+            elif status == "empty":
+                log("ℹ️ 次月未公開（正常）")
+
             else:
                 log("⚠️ 遷移失敗")
 
@@ -191,6 +190,7 @@ def run():
         finally:
             log("🔒 END")
             browser.close()
+
 
 if __name__ == "__main__":
     run()
