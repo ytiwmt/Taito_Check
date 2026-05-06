@@ -4,19 +4,17 @@ import os
 import re
 import datetime
 
-VERSION = "v7.21-lottery-support-final"
+VERSION = "v7.22-btnNextPeriod-fix"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/StartPage.aspx?Startpage=ModeSelect"
 
-
 # =========================
-# log
+# ログ
 # =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{now}] {msg}")
-
 
 def send(msg):
     log(f"送信内容:\n{msg}")
@@ -26,108 +24,78 @@ def send(msg):
         except Exception as e:
             log(f"❌ Webhook失敗: {e}")
 
-
 # =========================
-# parse（★抽選対応）
+# 解析（抽選対応）
 # =========================
 def parse(page):
     results = []
 
-    for a in page.locator("a[id*='lnkKoma']").all():
+    links = page.locator("a[id*='lnkKoma']").all()
+
+    for l in links:
         try:
-            txt = a.inner_text().replace("\xa0", "").replace(" ", "").strip()
+            txt = l.inner_text()
+            txt = txt.replace("\xa0", "").replace(" ", "").strip()
         except:
             continue
 
-        day_match = re.search(r"\d+", txt)
-        if not day_match:
-            continue
-
-        day = day_match.group(0)
-
-        if "○" in txt:
-            status = "○"
-        elif "△" in txt:
-            status = "△"
-        elif "×" in txt:
-            status = "×"
-        elif "抽選" in txt:
-            status = "抽選"
-        else:
-            continue
-
-        results.append(f"{day}{status}")
+        m = re.search(r"(\d+)(○|△|×|抽選)", txt)
+        if m:
+            results.append(f"{m.group(1)}{m.group(2)}")
 
     return results
 
-
-# =========================
-# analyze（抽選追加）
-# =========================
 def analyze(results, label):
     ok = [r for r in results if "○" in r or "△" in r]
-    lottery = [r for r in results if "抽選" in r]
+    lot = [r for r in results if "抽選" in r]
     ng = [r for r in results if "×" in r]
 
-    log(f"{label}: ○△={len(ok)} / 抽選={len(lottery)} / ×={len(ng)}")
-
+    log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
 
 # =========================
-# 次ページ判定（現実対応版）
+# VIEWSTATE取得
 # =========================
-def go_next(page):
-    log("⏭️ 次ページ判定")
-
-    before = page.evaluate("""
-        () => Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
-            .map(a => a.innerText.replace(/\\s/g,''))
-            .join('|')
-    """)
-
-    target = page.evaluate("""
+def get_vs(page):
+    return page.evaluate("""
         () => {
-            const el = document.querySelector("input[name*='lnkNextSpan']");
-            return el ? el.name.replace("h_", "") : null;
+            const el = document.querySelector("input[name='__VIEWSTATE']");
+            return el ? el.value.slice(0,200) : "";
         }
     """)
 
-    if not target:
-        log("➡ Nextなし")
-        return False
+# =========================
+# 次ページ（本物）
+# =========================
+def go_next(page):
+    log("⏭️ 次ページ（btnNextPeriod）")
 
-    log(f"➡ POSTBACK: {target}")
+    before_vs = get_vs(page)
 
     try:
-        page.evaluate(f"__doPostBack('{target}','')")
-        page.wait_for_timeout(3000)
+        # ★ここが本体
+        page.click("#btnNextPeriod")
 
-        after = page.evaluate("""
-            () => Array.from(document.querySelectorAll("a[id*='lnkKoma']"))
-                .map(a => a.innerText.replace(/\\s/g,''))
-                .join('|')
-        """)
+        # VIEWSTATE変化で遷移検知
+        page.wait_for_function(
+            """(prev) => {
+                const el = document.querySelector("input[name='__VIEWSTATE']");
+                return el && el.value.slice(0,200) !== prev;
+            }""",
+            arg=before_vs,
+            timeout=15000
+        )
 
-        # 空でも「抽選だけのページ」があり得るので parseで判定する
-        parsed = parse(page)
+        page.wait_for_timeout(500)
 
-        if not parsed:
-            log("➡ データなし（無効）")
-            return False
-
-        if after == before:
-            log("➡ 同一ページ")
-            return False
-
-        log("✅ 有効ページ遷移")
+        log("✅ 遷移成功")
         return True
 
     except Exception as e:
         log(f"❌ 遷移失敗: {e}")
         return False
 
-
 # =========================
-# main
+# メイン
 # =========================
 def run():
     with sync_playwright() as p:
@@ -153,31 +121,46 @@ def run():
 
             page.wait_for_load_state("networkidle")
 
-            # 1P
+            # =========================
+            # 1ページ
+            # =========================
             log("📑 1ページ目")
             res1 = parse(page)
             log(f"1P: {res1}")
             analyze(res1, "1P")
             final.extend(res1)
 
-            # 2P
+            # =========================
+            # 2ページ
+            # =========================
             if go_next(page):
-                log("📑 2ページ目")
                 res2 = parse(page)
-                log(f"2P: {res2}")
-                analyze(res2, "2P")
-                final.extend(res2)
 
+                # ★空なら「存在しない」と判定
+                if res2:
+                    log("📑 2ページ目")
+                    log(f"2P: {res2}")
+                    analyze(res2, "2P")
+                    final.extend(res2)
+                else:
+                    log("⚠️ 次月データなし（正常）")
+            else:
+                log("⚠️ 遷移失敗")
+
+            # =========================
             # 集約
+            # =========================
             final_unique = sorted(
-                set(final),
+                list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
             )
 
             log(f"📦 FINAL: {final_unique}")
 
+            # =========================
             # 通知
-            if any("○" in x or "△" in x for x in final_unique):
+            # =========================
+            if any(("○" in x or "△" in x) for x in final_unique):
                 msg = (
                     f"@everyone\n"
                     f"🏸 空きあり [{VERSION}]\n"
@@ -191,8 +174,6 @@ def run():
 
         except Exception as e:
             log(f"🔥 ERROR: {e}")
-            import traceback
-            traceback.print_exc()
             send(f"⚠️ エラー [{VERSION}]\n{e}")
 
         finally:
