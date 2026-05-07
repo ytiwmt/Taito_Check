@@ -1,52 +1,19 @@
 import requests
 import os
 import re
-import json
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 import jpholiday
-import redis
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
-REDIS_URL = os.getenv("REDIS_URL")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v10.2-log-clean"
+VERSION = "v10.2-clean-log"
 
 WEEKS = ["月", "火", "水", "木", "金", "土", "日"]
 
-# =========================================
-# Redis
-# =========================================
-
-r = None
-
-if REDIS_URL:
-
-    try:
-
-        connection_url = (
-            REDIS_URL.replace("redis://", "rediss://", 1)
-            if REDIS_URL.startswith("redis://")
-            else REDIS_URL
-        )
-
-        r = redis.from_url(
-            connection_url,
-            decode_responses=True,
-            ssl_cert_reqs=None
-        )
-
-        r.ping()
-
-        print("✅ Redis connection successful (Taito)")
-
-    except Exception as e:
-
-        print(f"❌ Redis connection error: {e}")
-
-        r = None
+DEBUG = False
 
 
 # =========================================
@@ -55,36 +22,38 @@ if REDIS_URL:
 
 def log(msg):
 
-    now = datetime.now().strftime("%H:%M:%S")
+    if DEBUG:
+        print(msg, flush=True)
 
-    print(f"[{now}] {msg}", flush=True)
+
+def info(msg):
+
+    print(msg, flush=True)
 
 
 def send(msg):
 
-    print("\n=== DISCORD SEND ===")
-    print(msg)
+    if DEBUG:
+        print("\n=== SEND ===")
+        print(msg)
 
     if not WEBHOOK_URL:
         return
 
     try:
-
         requests.post(
             WEBHOOK_URL,
-            json={"content": msg[:2000]},
+            json={"content": msg},
             timeout=20
         )
 
-        log("✅ Discord通知成功")
-
     except Exception as e:
 
-        log(f"❌ Discord送信失敗: {e}")
+        info(f"⚠️ Discord送信失敗: {e}")
 
 
 # =========================================
-# block resources
+# block heavy resources
 # =========================================
 
 def block_resources(page):
@@ -108,27 +77,6 @@ def block_resources(page):
 
 
 # =========================================
-# click helper
-# =========================================
-
-def click(page, selector, wait_selector=None, label=None):
-
-    if label:
-        log(f"➡️ {label}")
-
-    page.locator(selector).first.click(
-        timeout=5000
-    )
-
-    if wait_selector:
-
-        page.wait_for_selector(
-            wait_selector,
-            timeout=5000
-        )
-
-
-# =========================================
 # parse
 # =========================================
 
@@ -136,13 +84,14 @@ def parse(page, label):
 
     results = []
 
+    # 体育館テーブル固定
     table = page.locator("table").nth(21)
 
     links = table.locator(
         "a[id*='lnkKoma']"
     ).all()
 
-    log(f"📊 [{label}] link数: {len(links)}")
+    log(f"[{label}] link数: {len(links)}")
 
     for l in links:
 
@@ -172,20 +121,38 @@ def parse(page, label):
 
     unique = {}
 
-    for rdata in results:
+    for r in results:
 
-        key = f"{rdata['day']}_{rdata['status']}"
+        key = f"{r['day']}_{r['status']}"
 
-        unique[key] = rdata
+        unique[key] = r
 
     results = sorted(
         unique.values(),
         key=lambda x: x["day"]
     )
 
-    log(f"✅ [{label}] 抽出件数: {len(results)}")
+    log(f"[{label}] 件数: {len(results)}")
 
     return results
+
+
+# =========================================
+# click helper
+# =========================================
+
+def click(page, selector, wait_selector=None):
+
+    page.locator(selector).first.click(
+        timeout=5000
+    )
+
+    if wait_selector:
+
+        page.wait_for_selector(
+            wait_selector,
+            timeout=5000
+        )
 
 
 # =========================================
@@ -193,8 +160,6 @@ def parse(page, label):
 # =========================================
 
 def open_calendar(page):
-
-    log("🌐 TOPアクセス")
 
     page.goto(
         BASE_URL,
@@ -204,64 +169,63 @@ def open_calendar(page):
 
     click(
         page,
-        "input[value='公共施設予約メニュー']",
-        label="公共施設予約メニュー"
+        "input[value='公共施設予約メニュー']"
     )
 
     click(
         page,
-        "input[value*='空き照会']",
-        label="空き照会"
+        "input[value*='空き照会']"
     )
 
     click(
         page,
-        "input[value='次頁']",
-        label="次頁"
+        "input[value='次頁']"
     )
 
     click(
         page,
-        "input[value*='柳北']",
-        label="柳北選択"
+        "input[value*='柳北']"
     )
 
     click(
         page,
-        "input[name='ucPCFooter$btnForward']",
-        label="次へ"
+        "input[name='ucPCFooter$btnForward']"
     )
 
     click(
         page,
-        "input[value='カレンダー']",
-        label="カレンダー"
+        "input[value='カレンダー']"
     )
 
+    # 今月1日スタート
     now = datetime.now()
 
-    page.locator("#txtYear").fill(str(now.year))
-    page.locator("#txtMonth").fill(str(now.month))
+    page.locator("#txtYear").fill(
+        str(now.year)
+    )
+
+    page.locator("#txtMonth").fill(
+        str(now.month)
+    )
+
     page.locator("#txtDay").fill("1")
 
-    log(f"📅 開始日: {now.year}/{now.month}/1")
+    log(f"開始日: {now.year}/{now.month}/1")
 
     click(
         page,
-        "input[value='1ヶ月']",
-        label="1ヶ月表示"
+        "input[value='1ヶ月']"
     )
 
     click(
         page,
         "input[name='ucPCFooter$btnForward']",
-        "a[id*='lnkKoma']",
-        label="空き一覧表示"
+        "a[id*='lnkKoma']"
     )
 
 
 # =========================================
-# next
+# next month
 # =========================================
 
 def go_next(page):
@@ -270,7 +234,7 @@ def go_next(page):
         "a[id*='lnkKoma']"
     ).count()
 
-    log(f"➡️ 次期間遷移 (before={before})")
+    log(f"before links: {before}")
 
     page.locator(
         "#btnNextPeriod"
@@ -284,7 +248,7 @@ def go_next(page):
         (before) => {
             return document
                 .querySelectorAll("a[id*='lnkKoma']")
-                .length !== before
+                .length > before
         }
         """,
         arg=before,
@@ -295,13 +259,13 @@ def go_next(page):
         "a[id*='lnkKoma']"
     ).count()
 
-    log(f"✅ 次期間遷移成功 (after={after})")
+    log(f"after links: {after}")
 
     body = page.inner_text("body")
 
     if "お探しのページを表示できません" in body:
 
-        log("❌ ASP.NET不正遷移検知")
+        log("❌ 不正遷移")
 
         return []
 
@@ -333,21 +297,39 @@ def format_month(data, year, month):
         if holiday_name:
             line += f" ★({holiday_name})"
 
-        rows.append((item["day"], line))
+        rows.append(
+            (item["day"], line)
+        )
 
-    rows = sorted(rows, key=lambda x: x[0])
+    rows = sorted(
+        rows,
+        key=lambda x: x[0]
+    )
 
-    return [x[1] for x in rows]
+    seen = set()
+
+    final = []
+
+    for _, line in rows:
+
+        if line not in seen:
+
+            seen.add(line)
+
+            final.append(line)
+
+    return final
 
 
 # =========================================
 # mention
 # =========================================
 
-def has_mention_target(data, year, month):
+def has_weekend_or_holiday(data, year, month):
 
     for item in data:
 
+        # ○△だけ通知対象
         if item["status"] not in ["○", "△"]:
             continue
 
@@ -372,7 +354,7 @@ def has_mention_target(data, year, month):
 
 def run():
 
-    log(f"🚀 柳北監視開始 [{VERSION}]")
+    should_mention = False
 
     with sync_playwright() as p:
 
@@ -380,7 +362,12 @@ def run():
             headless=True,
             args=[
                 "--no-sandbox",
-                "--disable-dev-shm-usage"
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate"
             ]
         )
 
@@ -394,21 +381,16 @@ def run():
 
             open_calendar(page)
 
-            log("=== CURRENT MONTH ===")
-
-            current = parse(page, "CURRENT")
-
-            log("=== NEXT MONTH ===")
+            current = parse(
+                page,
+                "CURRENT"
+            )
 
             next_data = go_next(page)
 
             now = datetime.now()
 
-            current_lines = format_month(
-                current,
-                now.year,
-                now.month
-            )
+            current_month = now.month
 
             next_month = (
                 1 if now.month == 12
@@ -421,51 +403,26 @@ def run():
                 else now.year
             )
 
+            current_lines = format_month(
+                current,
+                now.year,
+                current_month
+            )
+
             next_lines = format_month(
                 next_data,
                 next_year,
                 next_month
             )
 
-            # Redis比較
-            current_state = {
-                "current": current_lines,
-                "next": next_lines
-            }
-
-            is_changed = True
-
-            if r:
-
-                try:
-
-                    last_raw = r.get("taito_ryuhoku_status")
-
-                    if last_raw:
-
-                        last_state = json.loads(last_raw)
-
-                        if last_state == current_state:
-
-                            is_changed = False
-
-                    r.set(
-                        "taito_ryuhoku_status",
-                        json.dumps(current_state)
-                    )
-
-                except Exception as e:
-
-                    log(f"❌ Redis Error: {e}")
-
             should_mention = (
-                has_mention_target(
+                has_weekend_or_holiday(
                     current,
                     now.year,
-                    now.month
+                    current_month
                 )
                 or
-                has_mention_target(
+                has_weekend_or_holiday(
                     next_data,
                     next_year,
                     next_month
@@ -474,27 +431,23 @@ def run():
 
             mention = (
                 "@everyone\n"
-                if should_mention and is_changed
+                if should_mention
                 else ""
             )
 
             msg = (
                 mention
-                + f"🏸 柳北スポーツプラザ [{VERSION}]"
-            )
+                + f"🏸 柳北スポーツプラザ [{VERSION}]\n\n"
 
-            if not is_changed:
-                msg += "（前回から変更なし）"
-
-            msg += (
-
-                f"\n\n【{now.month}月】\n"
+                f"【{current_month}月】\n"
                 + (
                     "\n".join(current_lines)
                     if current_lines else "空きなし"
                 )
 
-                + f"\n\n【{next_month}月】\n"
+                + "\n\n"
+
+                f"【{next_month}月】\n"
                 + (
                     "\n".join(next_lines)
                     if next_lines else "空きなし"
@@ -503,15 +456,14 @@ def run():
 
             send(msg)
 
-            log(
-                f"✅ 完了 "
-                f"(changed={is_changed}, "
-                f"mention={should_mention and is_changed})"
+            info(
+                f"✅ 台東区完了 "
+                f"(mention: {should_mention})"
             )
 
         except Exception as e:
 
-            log(f"❌ ERROR: {e}")
+            info(f"⚠️ 台東区 ERROR: {e}")
 
             send(f"⚠️ ERROR\n{e}")
 
@@ -519,7 +471,6 @@ def run():
 
             context.close()
             browser.close()
-            log("🛑 Browser closed")
 
 
 if __name__ == "__main__":
