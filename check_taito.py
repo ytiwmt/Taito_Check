@@ -9,7 +9,9 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v9.3-weekend-mention"
+VERSION = "v9.4-clean-output"
+
+WEEKS = ["月", "火", "水", "木", "金", "土", "日"]
 
 
 # =========================================
@@ -73,18 +75,24 @@ def parse(page, label):
 
             if m:
 
-                results.append(
-                    f"{m.group(1)}{m.group(2)}"
-                )
+                results.append({
+                    "day": int(m.group(1)),
+                    "status": m.group(2)
+                })
 
         except:
             pass
 
+    # 重複削除
+    unique = {}
+
+    for r in results:
+        key = f"{r['day']}_{r['status']}"
+        unique[key] = r
+
     results = sorted(
-        list(set(results)),
-        key=lambda x: int(
-            re.sub(r"\D", "", x)
-        )
+        unique.values(),
+        key=lambda x: x["day"]
     )
 
     log(f"[{label}] 件数: {len(results)}")
@@ -119,25 +127,21 @@ def open_calendar(page):
         wait_until="domcontentloaded"
     )
 
-    # 公共施設予約メニュー
     click(
         page,
         "input[value='公共施設予約メニュー']"
     )
 
-    # 空き照会
     click(
         page,
         "input[value*='空き照会']"
     )
 
-    # 次頁
     click(
         page,
         "input[value='次頁']"
     )
 
-    # 柳北
     page.locator(
         "input[value*='柳北']"
     ).first.wait_for(timeout=15000)
@@ -147,19 +151,17 @@ def open_calendar(page):
         "input[value*='柳北']"
     )
 
-    # 次へ
     click(
         page,
         "input[name='ucPCFooter$btnForward']"
     )
 
-    # カレンダー
     click(
         page,
         "input[value='カレンダー']"
     )
 
-    # 開始日 = 今月1日
+    # 今月1日スタート
     now = datetime.now()
 
     page.locator("#txtYear").fill(
@@ -174,13 +176,11 @@ def open_calendar(page):
 
     log(f"開始日: {now.year}/{now.month}/1")
 
-    # 1ヶ月
     click(
         page,
         "input[value='1ヶ月']"
     )
 
-    # 次へ
     click(
         page,
         "input[name='ucPCFooter$btnForward']",
@@ -204,7 +204,6 @@ def go_next(page):
         "#btnNextPeriod"
     ).click(force=True)
 
-    # 44 -> 58 みたいな増加待ち
     page.wait_for_function(
         """
         (before) => {
@@ -237,33 +236,62 @@ def go_next(page):
 
 
 # =========================================
-# holiday
+# format
 # =========================================
 
-def has_special_day(data, year, month):
+def format_month(data, year, month):
+
+    lines = []
 
     for item in data:
 
-        try:
+        # ○△だけ表示
+        if item["status"] not in ["○", "△"]:
+            continue
 
-            day = int(
-                re.sub(r"\D", "", item)
-            )
+        dt = datetime(
+            year,
+            month,
+            item["day"]
+        ).date()
 
-            dt = datetime(
-                year,
-                month,
-                day
-            ).date()
+        w = WEEKS[dt.weekday()]
 
-            if (
-                dt.weekday() >= 5
-                or jpholiday.is_holiday(dt)
-            ):
-                return True
+        holiday_name = jpholiday.is_holiday_name(dt)
 
-        except:
-            pass
+        line = f"{month}/{item['day']}({w})"
+
+        if holiday_name:
+            line += f" ★({holiday_name})"
+
+        lines.append(line)
+
+    return sorted(list(set(lines)))
+
+
+# =========================================
+# mention
+# =========================================
+
+def has_weekend_or_holiday(data, year, month):
+
+    for item in data:
+
+        # ○△だけ対象
+        if item["status"] not in ["○", "△"]:
+            continue
+
+        dt = datetime(
+            year,
+            month,
+            item["day"]
+        ).date()
+
+        if (
+            dt.weekday() >= 5
+            or jpholiday.is_holiday(dt)
+        ):
+            return True
 
     return False
 
@@ -287,7 +315,6 @@ def run():
 
             open_calendar(page)
 
-            # CURRENT
             log("=== CURRENT ===")
 
             current = parse(
@@ -295,7 +322,6 @@ def run():
                 "CURRENT"
             )
 
-            # NEXT
             log("=== NEXT ===")
 
             next_data = go_next(page)
@@ -315,29 +341,35 @@ def run():
                 else now.year
             )
 
-            # ==================================
-            # 土日祝判定
-            # ==================================
-
-            has_weekend_or_holiday = False
-
-            if has_special_day(
+            current_lines = format_month(
                 current,
                 now.year,
                 current_month
-            ):
-                has_weekend_or_holiday = True
+            )
 
-            if has_special_day(
+            next_lines = format_month(
                 next_data,
                 next_year,
                 next_month
-            ):
-                has_weekend_or_holiday = True
+            )
+
+            should_mention = (
+                has_weekend_or_holiday(
+                    current,
+                    now.year,
+                    current_month
+                )
+                or
+                has_weekend_or_holiday(
+                    next_data,
+                    next_year,
+                    next_month
+                )
+            )
 
             mention = (
                 "@everyone\n"
-                if has_weekend_or_holiday
+                if should_mention
                 else ""
             )
 
@@ -347,16 +379,16 @@ def run():
 
                 f"【{current_month}月】\n"
                 + (
-                    "\n".join(current)
-                    if current else "データなし"
+                    "\n".join(current_lines)
+                    if current_lines else "空きなし"
                 )
 
                 + "\n\n"
 
                 f"【{next_month}月】\n"
                 + (
-                    "\n".join(next_data)
-                    if next_data else "データなし"
+                    "\n".join(next_lines)
+                    if next_lines else "空きなし"
                 )
             )
 
