@@ -8,7 +8,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v9.1-fast-route-fixed"
+VERSION = "v9.2-fast-route-fixed"
 
 
 # =========================================
@@ -45,7 +45,7 @@ def parse(page, label):
 
     results = []
 
-    # 体育館固定テーブル
+    # 体育館テーブル固定
     table = page.locator("table").nth(21)
 
     links = table.locator(
@@ -158,9 +158,9 @@ def open_calendar(page):
         "input[value='カレンダー']"
     )
 
-    # ==================================
+    # ==========================
     # 開始日 = 今月1日
-    # ==================================
+    # ==========================
 
     now = datetime.now()
 
@@ -206,13 +206,18 @@ def go_next(page):
         "#btnNextPeriod"
     ).click(force=True)
 
-    # リンク数変化待ち
+    # ==================================
+    # 44 → 58 みたいな増加を待つ
+    # ==================================
+
     page.wait_for_function(
         """
         (before) => {
-            return document
-                .querySelectorAll("a[id*='lnkKoma']")
-                .length !== before
+            return (
+                document
+                    .querySelectorAll("a[id*='lnkKoma']")
+                    .length > before
+            )
         }
         """,
         arg=before,
