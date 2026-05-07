@@ -206,10 +206,7 @@ def go_next(page):
         "#btnNextPeriod"
     ).click(force=True)
 
-    # ==================================
-    # 44 → 58 みたいな増加を待つ
-    # ==================================
-
+    # 44 -> 58 みたいな増加待ち
     page.wait_for_function(
         """
         (before) => {
