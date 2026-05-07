@@ -1,17 +1,17 @@
 import requests
-from playwright.sync_api import sync_playwright
 import os
 import re
 import datetime
+from playwright.sync_api import sync_playwright
 
-VERSION = "v7.33-btnNextPeriod-real-click"
+VERSION = "v7.34-restart-for-next-month"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
 
 # =========================
-# ログ
+# LOG
 # =========================
 def log(msg):
     now = datetime.datetime.now().strftime("%H:%M:%S")
@@ -33,7 +33,7 @@ def send(msg):
 
 
 # =========================
-# 解析
+# PARSE
 # =========================
 def parse(page, label):
     results = []
@@ -45,14 +45,9 @@ def parse(page, label):
     for l in links:
         try:
             txt = l.inner_text()
-
-            txt = (
-                txt
-                .replace("\xa0", "")
-                .replace(" ", "")
-                .replace("\n", "")
-                .strip()
-            )
+            txt = txt.replace("\xa0", "")
+            txt = txt.replace(" ", "")
+            txt = txt.strip()
 
         except:
             continue
@@ -72,61 +67,94 @@ def analyze(results, label):
     lot = [x for x in results if "抽選" in x]
     ng = [x for x in results if "×" in x]
 
-    log(
-        f"{label}: "
-        f"○△={len(ok)} / "
-        f"抽選={len(lot)} / "
-        f"×={len(ng)}"
-    )
+    log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
 
 
 # =========================
-# 次ページ
+# 共通遷移
 # =========================
-def go_next(page):
-    log("⏭️ 次ページ（btnNextPeriod本押し）")
+def move_to_calendar(page):
+    page.goto(BASE_URL)
 
-    try:
-        before = page.locator("a[id*='lnkKoma']").count()
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(2000)
 
-        log(f"遷移前リンク数: {before}")
+    # 公共施設予約メニュー
+    page.locator("input[type='submit']", has_text="公共施設予約メニュー").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
-        # ボタン存在確認
-        page.locator("#btnNextPeriod").wait_for(timeout=10000)
+    # 空き照会
+    page.locator("input[type='submit']", has_text="空き照会").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
-        # ★本物のボタン押下
-        page.locator("#btnNextPeriod").click(force=True)
+    # 次頁
+    page.locator("input[type='submit']", has_text="次頁").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)
 
-        # ASP.NET描画待ち
-        page.wait_for_timeout(5000)
+    # 柳北
+    page.locator("input[type='submit']", has_text="柳北").first.wait_for(timeout=30000)
+    page.locator("input[type='submit']", has_text="柳北").first.click()
 
-        after = page.locator("a[id*='lnkKoma']").count()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
-        log(f"遷移後リンク数: {after}")
+    # 次へ
+    page.locator("input[name='ucPCFooter$btnForward']").first.click()
 
-        # デバッグ
-        body = page.inner_text("body")[:1500]
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
-        log(f"BODY先頭:\n{body}")
+    # カレンダー
+    page.locator("input[type='submit']", has_text="カレンダー").first.click()
 
-        if after <= 0:
-            log("❌ lnkKoma消失")
-            return False
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
-        if before == after:
-            log("⚠️ link数変化なし")
+    # 1ヶ月
+    page.locator("input[type='submit']", has_text="1ヶ月").first.click()
 
-        log("✅ 2ページ取得成功")
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
 
+    # 次へ
+    page.locator("input[name='ucPCFooter$btnForward']").first.click()
+
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(3000)
+
+
+# =========================
+# 次期間へ
+# =========================
+def move_next_period(page):
+    log("⏭️ 次期間へ移動")
+
+    btn = page.locator("#btnNextPeriod")
+
+    btn.wait_for(timeout=10000)
+
+    before = page.locator("body").inner_text()[:500]
+
+    btn.click()
+
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(4000)
+
+    after = page.locator("body").inner_text()[:500]
+
+    if before != after:
+        log("✅ ページ変化あり")
         return True
 
-    except Exception as e:
-        log(f"❌ 遷移失敗: {e}")
-        return False
+    log("⚠️ ページ変化なし")
+    return False
 
 
 # =========================
-# メイン
+# MAIN
 # =========================
 def run():
     with sync_playwright() as p:
@@ -140,10 +168,8 @@ def run():
 
         context = browser.new_context(
             user_agent=(
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 800}
@@ -154,105 +180,52 @@ def run():
         final = []
 
         try:
-            # =========================
-            # 初期アクセス
-            # =========================
-            page.goto(BASE_URL)
 
-            page.wait_for_load_state("networkidle")
-
-            # 公共施設予約メニュー
-            page.locator(
-                "input[type='submit']",
-                has_text="公共施設予約メニュー"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 空き照会
-            page.locator(
-                "input[type='submit']",
-                has_text="空き照会"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 次頁
-            page.locator(
-                "input[type='submit']",
-                has_text="次頁"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 柳北
-            page.locator(
-                "input[type='submit']",
-                has_text="柳北"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 次へ
-            page.locator(
-                "input[name='ucPCFooter$btnForward']"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # カレンダー
-            page.locator(
-                "input[type='submit']",
-                has_text="カレンダー"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 1ヶ月
-            page.locator(
-                "input[type='submit']",
-                has_text="1ヶ月"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # 次へ
-            page.locator(
-                "input[name='ucPCFooter$btnForward']"
-            ).first.click()
-
-            page.wait_for_load_state("networkidle")
-
-            # =========================
+            # =====================================
             # 1ページ目
-            # =========================
+            # =====================================
+            move_to_calendar(page)
+
             log("📑 1ページ目")
 
             res1 = parse(page, "1P")
+
+            log(f"1P: {res1}")
 
             analyze(res1, "1P")
 
             final.extend(res1)
 
-            # =========================
+            # =====================================
             # 2ページ目
-            # =========================
-            if go_next(page):
+            # =====================================
+            # 同一セッション内で
+            # btnNextPeriodだけ押す
+            # =====================================
 
-                log("📑 2ページ目")
+            if move_next_period(page):
 
-                res2 = parse(page, "2P")
+                body = page.locator("body").inner_text()
 
-                analyze(res2, "2P")
+                if "お探しのページを表示できません" in body:
+                    log("❌ 不正遷移ページ")
+                else:
+                    log("📑 2ページ目")
 
-                final.extend(res2)
+                    res2 = parse(page, "2P")
 
-            else:
-                log("⚠️ 2ページ取得失敗")
+                    log(f"2P: {res2}")
 
-            # =========================
+                    analyze(res2, "2P")
+
+                    if res2:
+                        final.extend(res2)
+                    else:
+                        log("⚠️ 2Pデータなし")
+
+            # =====================================
             # 集約
-            # =========================
+            # =====================================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -260,22 +233,20 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
-            # =========================
-            # 通知
-            # =========================
-            has_open = any(
-                ("○" in x or "△" in x)
-                for x in final_unique
-            )
+            # 空きだけ通知
+            avail = [
+                x for x in final_unique
+                if ("○" in x or "△" in x or "抽選" in x)
+            ]
 
-            if has_open:
+            if avail:
 
                 msg = (
                     f"@everyone\n"
                     f"🏸 空きあり [{VERSION}]\n"
-                    f"{len(final_unique)}件\n"
+                    f"{len(avail)}件\n"
                     f"```\n"
-                    + "\n".join(final_unique)
+                    + "\n".join(avail)
                     + "\n```"
                 )
 
@@ -286,16 +257,19 @@ def run():
 
         except Exception as e:
 
+            import traceback
+
+            traceback.print_exc()
+
             log(f"🔥 ERROR: {e}")
 
             send(
-                f"⚠️ エラー [{VERSION}]\n{e}"
+                f"⚠️ エラー [{VERSION}]\n"
+                f"{e}"
             )
 
         finally:
-
             log("🔒 END")
-
             browser.close()
 
 
