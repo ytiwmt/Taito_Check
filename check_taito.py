@@ -3,12 +3,13 @@ import os
 import re
 from datetime import datetime
 from playwright.sync_api import sync_playwright
+import jpholiday
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v9.2-fast-route-fixed"
+VERSION = "v9.3-weekend-mention"
 
 
 # =========================================
@@ -158,10 +159,7 @@ def open_calendar(page):
         "input[value='カレンダー']"
     )
 
-    # ==========================
     # 開始日 = 今月1日
-    # ==========================
-
     now = datetime.now()
 
     page.locator("#txtYear").fill(
@@ -239,6 +237,38 @@ def go_next(page):
 
 
 # =========================================
+# holiday
+# =========================================
+
+def has_special_day(data, year, month):
+
+    for item in data:
+
+        try:
+
+            day = int(
+                re.sub(r"\D", "", item)
+            )
+
+            dt = datetime(
+                year,
+                month,
+                day
+            ).date()
+
+            if (
+                dt.weekday() >= 5
+                or jpholiday.is_holiday(dt)
+            ):
+                return True
+
+        except:
+            pass
+
+    return False
+
+
+# =========================================
 # main
 # =========================================
 
@@ -279,9 +309,41 @@ def run():
                 else now.month + 1
             )
 
-            msg = (
+            next_year = (
+                now.year + 1
+                if now.month == 12
+                else now.year
+            )
+
+            # ==================================
+            # 土日祝判定
+            # ==================================
+
+            has_weekend_or_holiday = False
+
+            if has_special_day(
+                current,
+                now.year,
+                current_month
+            ):
+                has_weekend_or_holiday = True
+
+            if has_special_day(
+                next_data,
+                next_year,
+                next_month
+            ):
+                has_weekend_or_holiday = True
+
+            mention = (
                 "@everyone\n"
-                f"🏸 柳北スポーツプラザ [{VERSION}]\n\n"
+                if has_weekend_or_holiday
+                else ""
+            )
+
+            msg = (
+                mention
+                + f"🏸 柳北スポーツプラザ [{VERSION}]\n\n"
 
                 f"【{current_month}月】\n"
                 + (
