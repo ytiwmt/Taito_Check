@@ -1,41 +1,60 @@
-import os
 import requests
+import os
+import re
+import datetime
 from playwright.sync_api import sync_playwright
 
+VERSION = "v8-fixed-restart-model"
+
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
+
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
 
+def log(msg):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+
 def send(msg):
-    print(msg)
+    log("送信内容:\n" + msg)
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg})
 
 
-def scan(page):
-    results = []
-
+# -----------------------
+# 抽出（固定）
+# -----------------------
+def extract(page):
     links = page.locator("a[id*='lnkKoma']").all()
+    res = []
+
     for l in links:
         try:
-            txt = l.inner_text().replace("\xa0", "").strip()
+            t = l.inner_text().replace("\xa0", "").strip()
         except:
             continue
 
-        import re
-        m = re.search(r"(\d+)(○|△|×|抽選)", txt)
+        m = re.search(r"(\d+)(○|△|×|抽選)", t)
         if m:
-            results.append(f"{m.group(1)}{m.group(2)}")
+            res.append(f"{m.group(1)}{m.group(2)}")
 
-    return results
+    return res
 
 
-def full_flow(page):
+# -----------------------
+# 1回の完全フロー
+# -----------------------
+def run_cycle(page, label):
+
+    log(f"=== {label} ===")
+
     page.goto(BASE_URL)
+    page.wait_for_timeout(2000)
 
     page.locator("input[value='公共施設予約メニュー']").click()
-    page.locator("input[value^='1. 空き照会']").click()
+    page.locator("input[value^='空き照会']").click()
     page.locator("input[value='次頁']").click()
+
     page.locator("input[value*='柳北']").first.click()
 
     page.locator("input[name='ucPCFooter$btnForward']").click()
@@ -45,75 +64,47 @@ def full_flow(page):
 
     page.locator("input[name='ucPCFooter$btnForward']").click()
 
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
 
-    return page
+    page.wait_for_selector("a[id*='lnkKoma']", timeout=20000)
 
+    data = extract(page)
 
-def next_available(page):
-    body = page.inner_text("body")
+    log(f"[{label}] 件数: {len(data)}")
 
-    # ★重要：次期間存在チェック
-    if "次の期間を表示" not in body and "btnNextPeriod" not in body:
-        return False
-
-    btn = page.locator("#btnNextPeriod")
-    return btn.count() > 0
+    return data
 
 
+# -----------------------
+# メイン
+# -----------------------
 def run():
+
     with sync_playwright() as p:
+
         browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
         try:
-            # =====================
-            # CURRENT
-            # =====================
-            page1 = browser.new_page()
-            print("=== CURRENT ===")
+            # 1回目（現在月）
+            data1 = run_cycle(page, "CURRENT")
 
-            page1 = full_flow(page1)
-            current = scan(page1)
-            print(f"[SCAN] CURRENT: {len(current)}件")
-            page1.close()
+            # 2回目（重要：完全再アクセス）
+            data2 = run_cycle(page, "NEXT_MONTH")
 
-            # =====================
-            # NEXT
-            # =====================
-            page2 = browser.new_page()
-            print("=== NEXT ===")
+            final = sorted(set(data1 + data2))
 
-            page2 = full_flow(page2)
-
-            if next_available(page2):
-                print("⏭️ 次期間あり → クリック")
-
-                page2.locator("#btnNextPeriod").click()
-                page2.wait_for_timeout(3000)
-
-                next_data = scan(page2)
-                print(f"[SCAN] NEXT: {len(next_data)}件")
-
-            else:
-                print("⏭️ 次期間なし → スキップ")
-                next_data = []
-
-            page2.close()
-
-            # =====================
-            # 集約
-            # =====================
-            final = sorted(
-                list(set(current + next_data)),
-                key=lambda x: int("".join([c for c in x if c.isdigit()]))
-            )
+            log(f"FINAL: {final}")
 
             if final:
-                msg = "@everyone\n🏸 柳北スポーツプラザ 空き情報\n" + "\n".join(final)
+                msg = "@everyone\n🏸 空きあり\n" + "\n".join(final)
             else:
                 msg = "空きなし"
 
             send(msg)
+
+        except Exception as e:
+            log(f"ERROR: {e}")
 
         finally:
             browser.close()
