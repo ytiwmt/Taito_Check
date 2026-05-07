@@ -9,7 +9,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v9.4-clean-output"
+VERSION = "v9.5-debug-date-format"
 
 WEEKS = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -245,10 +245,6 @@ def format_month(data, year, month):
 
     for item in data:
 
-        # ○△だけ表示
-        if item["status"] not in ["○", "△"]:
-            continue
-
         dt = datetime(
             year,
             month,
@@ -259,7 +255,7 @@ def format_month(data, year, month):
 
         holiday_name = jpholiday.is_holiday_name(dt)
 
-        line = f"{month}/{item['day']}({w})"
+        line = f"{month}/{item['day']}({w}) {item['status']}"
 
         if holiday_name:
             line += f" ★({holiday_name})"
@@ -277,7 +273,7 @@ def has_weekend_or_holiday(data, year, month):
 
     for item in data:
 
-        # ○△だけ対象
+        # ○△だけ通知対象
         if item["status"] not in ["○", "△"]:
             continue
 
