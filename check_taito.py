@@ -8,7 +8,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v8.4-month-start-fix"
+VERSION = "v8.5-gym-only-final"
 
 
 # =========================================
@@ -45,33 +45,52 @@ def parse(page, label):
 
     results = []
 
-    links = page.locator(
-        "a[id*='lnkKoma']"
-    ).all()
+    tables = page.locator("table").all()
 
-    log(f"[{label}] link数: {len(links)}")
+    log(f"[{label}] table数: {len(tables)}")
 
-    for l in links:
+    for idx, table in enumerate(tables):
 
         try:
 
-            txt = (
-                l.inner_text()
-                .replace("\xa0", "")
-                .replace(" ", "")
-                .strip()
-            )
+            table_text = table.inner_text()
 
-            m = re.search(
-                r"(\d+)(○|△|×|抽選)",
-                txt
-            )
+            # 体育館テーブル限定
+            if "体育館" not in table_text:
+                continue
 
-            if m:
+            log(f"[{label}] 体育館テーブル検出 index={idx}")
 
-                results.append(
-                    f"{m.group(1)}{m.group(2)}"
-                )
+            links = table.locator(
+                "a[id*='lnkKoma']"
+            ).all()
+
+            log(f"[{label}] link数: {len(links)}")
+
+            for l in links:
+
+                try:
+
+                    txt = (
+                        l.inner_text()
+                        .replace("\xa0", "")
+                        .replace(" ", "")
+                        .strip()
+                    )
+
+                    m = re.search(
+                        r"(\d+)(○|△|×|抽選)",
+                        txt
+                    )
+
+                    if m:
+
+                        results.append(
+                            f"{m.group(1)}{m.group(2)}"
+                        )
+
+                except:
+                    pass
 
         except:
             pass
@@ -153,6 +172,7 @@ def open_calendar(page):
 
     # year
     txt_year = page.locator("#txtYear")
+
     txt_year.click()
 
     page.keyboard.press("Control+A")
@@ -162,6 +182,7 @@ def open_calendar(page):
 
     # month
     txt_month = page.locator("#txtMonth")
+
     txt_month.click()
 
     page.keyboard.press("Control+A")
@@ -171,6 +192,7 @@ def open_calendar(page):
 
     # day
     txt_day = page.locator("#txtDay")
+
     txt_day.click()
 
     page.keyboard.press("Control+A")
