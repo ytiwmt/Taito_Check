@@ -4,7 +4,7 @@ import re
 import datetime
 from playwright.sync_api import sync_playwright
 
-VERSION = "v7.35-request-debug"
+VERSION = "v7.36-real-mouse-click"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
@@ -30,27 +30,6 @@ def send(msg):
             )
         except Exception as e:
             log(f"❌ Webhook失敗: {e}")
-
-
-# =========================
-# REQUEST DEBUG
-# =========================
-def setup_request_debug(page):
-
-    def on_request(req):
-        try:
-            print("\n================ REQUEST ================")
-            print("METHOD:", req.method)
-            print("URL:", req.url)
-
-            if req.post_data:
-                print("POST DATA:")
-                print(req.post_data[:5000])
-
-        except Exception as e:
-            print("REQUEST DEBUG ERROR:", e)
-
-    page.on("request", on_request)
 
 
 # =========================
@@ -93,30 +72,6 @@ def analyze(results, label):
     ng = [x for x in results if "×" in x]
 
     log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
-
-
-# =========================
-# hidden field dump
-# =========================
-def dump_hidden(page, title):
-
-    print(f"\n========== HIDDEN DUMP : {title} ==========")
-
-    hidden = page.locator("input[type='hidden']").all()
-
-    for h in hidden:
-
-        try:
-            name = h.get_attribute("name")
-            value = h.get_attribute("value")
-
-            if value:
-                value = value[:300]
-
-            print(name, "=", value)
-
-        except:
-            pass
 
 
 # =========================
@@ -206,15 +161,11 @@ def move_to_calendar(page):
 
 
 # =========================
-# 次ページ
+# 次期間
 # =========================
 def move_next_period(page):
 
-    log("⏭️ 次ページ（通信解析モード）")
-
-    dump_hidden(page, "BEFORE CLICK")
-
-    before_body = page.locator("body").inner_text()[:500]
+    log("⏭️ 次ページ（リアルマウスクリック）")
 
     try:
 
@@ -222,32 +173,75 @@ def move_next_period(page):
 
         btn.wait_for(timeout=10000)
 
-        log("btnNextPeriod click 実行")
+        before_links = page.locator("a[id*='lnkKoma']").count()
 
-        btn.click()
+        log(f"遷移前link数: {before_links}")
+
+        # スクロール
+        btn.scroll_into_view_if_needed()
+
+        page.wait_for_timeout(1000)
+
+        # 座標取得
+        box = btn.bounding_box()
+
+        if not box:
+            log("❌ bounding_box取得失敗")
+            return False
+
+        x = box["x"] + box["width"] / 2
+        y = box["y"] + box["height"] / 2
+
+        log(f"クリック座標: {x}, {y}")
+
+        # 本物のマウス操作
+        page.mouse.move(x, y)
+
+        page.wait_for_timeout(300)
+
+        page.mouse.down()
+
+        page.wait_for_timeout(150)
+
+        page.mouse.up()
 
         page.wait_for_load_state("networkidle")
+
         page.wait_for_timeout(5000)
 
-        dump_hidden(page, "AFTER CLICK")
+        # 判定
+        body = page.locator("body").inner_text()
 
-        after_body = page.locator("body").inner_text()[:500]
+        after_links = page.locator("a[id*='lnkKoma']").count()
 
-        print("\n========== BODY BEFORE ==========")
-        print(before_body)
+        log(f"遷移後link数: {after_links}")
 
-        print("\n========== BODY AFTER ==========")
-        print(after_body)
+        if "お探しのページを表示できません" in body:
 
-        if "お探しのページを表示できません" in after_body:
             log("❌ 不正遷移ページ")
+
+            print("\n=== BODY HEAD ===")
+            print(body[:1000])
+
             return False
+
+        if after_links == 0:
+
+            log("❌ lnkKoma消失")
+
+            print("\n=== BODY HEAD ===")
+            print(body[:1000])
+
+            return False
+
+        log("✅ 2ページ遷移成功")
 
         return True
 
     except Exception as e:
 
         log(f"❌ 遷移例外: {e}")
+
         return False
 
 
@@ -279,18 +273,14 @@ def run():
 
         page = context.new_page()
 
-        setup_request_debug(page)
-
         final = []
 
         try:
 
-            # =====================================
+            # =========================
             # 1ページ目
-            # =====================================
+            # =========================
             move_to_calendar(page)
-
-            dump_hidden(page, "1PAGE")
 
             log("📑 1ページ目")
 
@@ -302,12 +292,10 @@ def run():
 
             final.extend(res1)
 
-            # =====================================
-            # 次ページ
-            # =====================================
-            ok = move_next_period(page)
-
-            if ok:
+            # =========================
+            # 2ページ目
+            # =========================
+            if move_next_period(page):
 
                 log("📑 2ページ目")
 
@@ -320,11 +308,12 @@ def run():
                 final.extend(res2)
 
             else:
+
                 log("⚠️ 2ページ取得失敗")
 
-            # =====================================
+            # =========================
             # FINAL
-            # =====================================
+            # =========================
             final_unique = sorted(
                 list(set(final)),
                 key=lambda x: int(re.sub(r"\D", "", x))
@@ -344,14 +333,17 @@ def run():
             if avail:
 
                 msg = (
-                    f"🏸 空きあり\n"
+                    f"@everyone\n"
+                    f"🏸 空きあり [{VERSION}]\n"
+                    f"{len(avail)}件\n"
                     f"```\n"
                     + "\n".join(avail)
                     + "\n```"
                 )
 
             else:
-                msg = "🏸 空きなし"
+
+                msg = f"🏸 空きなし [{VERSION}]"
 
             send(msg)
 
@@ -363,7 +355,10 @@ def run():
 
             log(f"🔥 ERROR: {e}")
 
-            send(f"⚠️ ERROR\n{e}")
+            send(
+                f"⚠️ ERROR [{VERSION}]\n"
+                f"{e}"
+            )
 
         finally:
 
