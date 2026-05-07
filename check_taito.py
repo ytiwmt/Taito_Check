@@ -1,25 +1,26 @@
 import requests
 import os
 import re
-import time
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v8.1-next-period-stable"
+VERSION = "v8.4-month-start-fix"
 
 
-# =====================================
-# utility
-# =====================================
+# =========================================
+# util
+# =========================================
 
 def log(msg):
     print(msg, flush=True)
 
 
-def send_discord(msg):
+def send(msg):
+
     print("\n=== SEND ===")
     print(msg)
 
@@ -36,29 +37,38 @@ def send_discord(msg):
         print(e)
 
 
-# =====================================
+# =========================================
 # parse
-# =====================================
+# =========================================
 
-def parse_links(page, label):
+def parse(page, label):
+
     results = []
 
-    links = page.locator("a[id*='lnkKoma']").all()
+    links = page.locator(
+        "a[id*='lnkKoma']"
+    ).all()
 
     log(f"[{label}] link数: {len(links)}")
 
-    for link in links:
+    for l in links:
+
         try:
+
             txt = (
-                link.inner_text()
+                l.inner_text()
                 .replace("\xa0", "")
                 .replace(" ", "")
                 .strip()
             )
 
-            m = re.search(r"(\d+)(○|△|×|抽選)", txt)
+            m = re.search(
+                r"(\d+)(○|△|×|抽選)",
+                txt
+            )
 
             if m:
+
                 results.append(
                     f"{m.group(1)}{m.group(2)}"
                 )
@@ -71,16 +81,17 @@ def parse_links(page, label):
     return results
 
 
-# =====================================
-# navigation
-# =====================================
+# =========================================
+# setup
+# =========================================
 
 def open_calendar(page):
-    """
-    柳北スポーツプラザ → カレンダー → 1ヶ月
-    """
 
-    page.goto(BASE_URL, wait_until="domcontentloaded")
+    page.goto(
+        BASE_URL,
+        wait_until="domcontentloaded"
+    )
+
     page.wait_for_timeout(3000)
 
     # 公共施設予約メニュー
@@ -89,7 +100,7 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1500)
 
     # 空き照会
     page.locator(
@@ -97,7 +108,7 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1500)
 
     # 次頁
     page.locator(
@@ -105,7 +116,7 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(2000)
 
     # 柳北
     page.locator(
@@ -117,7 +128,7 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1500)
 
     # 次へ
     page.locator(
@@ -125,12 +136,49 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1500)
 
     # カレンダー
     page.locator(
         "input[value='カレンダー']"
     ).first.click()
+
+    page.wait_for_timeout(1000)
+
+    # =====================================
+    # 表示開始日 = 今月1日
+    # =====================================
+
+    now = datetime.now()
+
+    # year
+    txt_year = page.locator("#txtYear")
+    txt_year.click()
+
+    page.keyboard.press("Control+A")
+    page.keyboard.press("Backspace")
+
+    txt_year.type(str(now.year))
+
+    # month
+    txt_month = page.locator("#txtMonth")
+    txt_month.click()
+
+    page.keyboard.press("Control+A")
+    page.keyboard.press("Backspace")
+
+    txt_month.type(str(now.month))
+
+    # day
+    txt_day = page.locator("#txtDay")
+    txt_day.click()
+
+    page.keyboard.press("Control+A")
+    page.keyboard.press("Backspace")
+
+    txt_day.type("1")
+
+    log(f"開始日: {now.year}/{now.month}/1")
 
     page.wait_for_timeout(1000)
 
@@ -147,60 +195,71 @@ def open_calendar(page):
     ).first.click()
 
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(4000)
+    page.wait_for_timeout(5000)
 
-    # 体育館ページ確認
     page.wait_for_selector(
         "a[id*='lnkKoma']",
         timeout=30000
     )
 
 
-def go_next_period(page):
-    """
-    次の期間を表示 >
-    """
+# =========================================
+# next page
+# =========================================
 
-    log("⏭️ btnNextPeriod click")
-
-    before = page.locator(
-        "a[id*='lnkKoma']"
-    ).count()
-
-    log(f"before links: {before}")
-
-    page.locator(
-        "#btnNextPeriod"
-    ).click(force=True)
-
-    # ASP.NET が重いのでかなり待つ
-    page.wait_for_timeout(8000)
+def go_next(page):
 
     try:
-        page.wait_for_selector(
-            "a[id*='lnkKoma']",
-            timeout=15000
-        )
-    except:
-        pass
 
-    after = page.locator(
-        "a[id*='lnkKoma']"
-    ).count()
+        log("⏭️ btnNextPeriod click")
 
-    log(f"after links: {after}")
+        before = page.locator(
+            "a[id*='lnkKoma']"
+        ).count()
 
-    body = page.inner_text("body")[:500]
+        log(f"before links: {before}")
 
-    log("=== BODY HEAD ===")
-    log(body)
+        page.locator(
+            "#btnNextPeriod"
+        ).click(force=True)
 
-    return after > 0
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(5000)
+
+        body = page.inner_text("body")
+
+        after = page.locator(
+            "a[id*='lnkKoma']"
+        ).count()
+
+        log(f"after links: {after}")
+
+        if "お探しのページを表示できません" in body:
+
+            log("❌ 不正遷移")
+
+            log(body[:500])
+
+            return []
+
+        return parse(page, "NEXT")
+
+    except Exception as e:
+
+        log(f"❌ NEXT ERROR: {e}")
+
+        try:
+            body = page.inner_text("body")
+            log(body[:1000])
+        except:
+            pass
+
+        return []
 
 
-# =====================================
+# =========================================
 # main
-# =====================================
+# =========================================
 
 def run():
 
@@ -224,45 +283,26 @@ def run():
 
         try:
 
-            # =================================
-            # CURRENT
-            # =================================
-
-            log("=== CURRENT ===")
-
             open_calendar(page)
 
-            current = parse_links(
+            # CURRENT
+            log("=== CURRENT ===")
+
+            current = parse(
                 page,
                 "CURRENT"
             )
 
             final.extend(current)
 
-            # =================================
             # NEXT
-            # =================================
-
             log("=== NEXT ===")
 
-            ok = go_next_period(page)
+            next_data = go_next(page)
 
-            if ok:
+            final.extend(next_data)
 
-                next_data = parse_links(
-                    page,
-                    "NEXT"
-                )
-
-                final.extend(next_data)
-
-            else:
-                log("❌ 次ページ取得失敗")
-
-            # =================================
             # FINAL
-            # =================================
-
             final = sorted(
                 list(set(final)),
                 key=lambda x: int(
@@ -272,18 +312,13 @@ def run():
 
             log(f"FINAL: {final}")
 
-            if final:
+            msg = (
+                "@everyone\n"
+                f"🏸 柳北スポーツプラザ [{VERSION}]\n"
+                + "\n".join(final)
+            )
 
-                msg = (
-                    "@everyone\n"
-                    "🏸 柳北スポーツプラザ 空き情報\n"
-                    + "\n".join(final)
-                )
-
-            else:
-                msg = "空きなし"
-
-            send_discord(msg)
+            send(msg)
 
         except Exception as e:
 
@@ -297,9 +332,7 @@ def run():
             except:
                 pass
 
-            send_discord(
-                f"⚠️ ERROR\n{e}"
-            )
+            send(f"⚠️ ERROR\n{e}")
 
         finally:
             browser.close()
