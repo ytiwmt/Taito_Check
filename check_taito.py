@@ -9,7 +9,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v9.5-debug-date-format"
+VERSION = "v10.1-fast-sort-fixed"
 
 WEEKS = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -38,6 +38,29 @@ def send(msg):
         )
     except Exception as e:
         print(e)
+
+
+# =========================================
+# block heavy resources
+# =========================================
+
+def block_resources(page):
+
+    def handler(route):
+
+        rtype = route.request.resource_type
+
+        if rtype in [
+            "image",
+            "media",
+            "font",
+            "stylesheet"
+        ]:
+            route.abort()
+        else:
+            route.continue_()
+
+    page.route("**/*", handler)
 
 
 # =========================================
@@ -83,7 +106,6 @@ def parse(page, label):
         except:
             pass
 
-    # 重複削除
     unique = {}
 
     for r in results:
@@ -101,30 +123,33 @@ def parse(page, label):
 
 
 # =========================================
-# helper
+# click helper
 # =========================================
 
 def click(page, selector, wait_selector=None):
 
-    page.locator(selector).first.click()
+    page.locator(selector).first.click(
+        timeout=5000
+    )
 
     if wait_selector:
 
         page.wait_for_selector(
             wait_selector,
-            timeout=15000
+            timeout=5000
         )
 
 
 # =========================================
-# open
+# open calendar
 # =========================================
 
 def open_calendar(page):
 
     page.goto(
         BASE_URL,
-        wait_until="domcontentloaded"
+        wait_until="domcontentloaded",
+        timeout=15000
     )
 
     click(
@@ -141,10 +166,6 @@ def open_calendar(page):
         page,
         "input[value='次頁']"
     )
-
-    page.locator(
-        "input[value*='柳北']"
-    ).first.wait_for(timeout=15000)
 
     click(
         page,
@@ -189,7 +210,7 @@ def open_calendar(page):
 
 
 # =========================================
-# next
+# next month
 # =========================================
 
 def go_next(page):
@@ -202,20 +223,21 @@ def go_next(page):
 
     page.locator(
         "#btnNextPeriod"
-    ).click(force=True)
+    ).click(
+        force=True,
+        timeout=5000
+    )
 
     page.wait_for_function(
         """
         (before) => {
-            return (
-                document
-                    .querySelectorAll("a[id*='lnkKoma']")
-                    .length > before
-            )
+            return document
+                .querySelectorAll("a[id*='lnkKoma']")
+                .length > before
         }
         """,
         arg=before,
-        timeout=15000
+        timeout=7000
     )
 
     after = page.locator(
@@ -241,7 +263,7 @@ def go_next(page):
 
 def format_month(data, year, month):
 
-    lines = []
+    rows = []
 
     for item in data:
 
@@ -260,9 +282,27 @@ def format_month(data, year, month):
         if holiday_name:
             line += f" ★({holiday_name})"
 
-        lines.append(line)
+        rows.append(
+            (item["day"], line)
+        )
 
-    return sorted(list(set(lines)))
+    # day順ソート
+    rows = sorted(rows, key=lambda x: x[0])
+
+    # 重複削除
+    seen = set()
+
+    final = []
+
+    for _, line in rows:
+
+        if line not in seen:
+
+            seen.add(line)
+
+            final.append(line)
+
+    return final
 
 
 # =========================================
@@ -302,10 +342,22 @@ def run():
 
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate"
+            ]
         )
 
-        page = browser.new_page()
+        context = browser.new_context()
+
+        page = context.new_page()
+
+        block_resources(page)
 
         try:
 
@@ -394,18 +446,11 @@ def run():
 
             log(f"ERROR: {e}")
 
-            try:
-                page.screenshot(
-                    path="debug.png",
-                    full_page=True
-                )
-            except:
-                pass
-
             send(f"⚠️ ERROR\n{e}")
 
         finally:
 
+            context.close()
             browser.close()
 
 
