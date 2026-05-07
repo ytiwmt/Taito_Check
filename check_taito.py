@@ -1,19 +1,18 @@
 import os
 import re
-import time
 import requests
 from playwright.sync_api import sync_playwright
 
-VERSION = "v9.0-stable-reset"
+VERSION = "v9.1-month-state-fixed"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
 
-# ----------------------
+# -------------------
 # log
-# ----------------------
+# -------------------
 def log(msg):
     print(msg)
 
@@ -21,36 +20,27 @@ def log(msg):
 def send(msg):
     log("\n=== SEND ===")
     log(msg)
-
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg})
 
 
-# ----------------------
-# 安定クリック
-# ----------------------
-def click(page, selector, timeout=15000):
+# -------------------
+# 共通クリック
+# -------------------
+def click(page, selector):
     el = page.locator(selector).first
-    el.wait_for(state="visible", timeout=timeout)
+    el.wait_for(state="visible", timeout=20000)
     el.scroll_into_view_if_needed()
     el.click()
     page.wait_for_timeout(1200)
 
 
-# ----------------------
-# 初期化（重要）
-# ----------------------
-def goto_start(page):
-    page.goto(BASE_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(3000)
-
-
-# ----------------------
-# 抽出ロジック
-# ----------------------
+# -------------------
+# 抽出
+# -------------------
 def extract(page):
     links = page.locator("a[id*='lnkKoma']").all()
-    result = []
+    res = []
 
     for l in links:
         try:
@@ -60,50 +50,34 @@ def extract(page):
 
         m = re.search(r"(\d+)(○|△|×|抽選)", t)
         if m:
-            result.append(f"{m.group(1)}{m.group(2)}")
+            res.append(f"{m.group(1)}{m.group(2)}")
 
-    return result
+    return res
 
 
-# ----------------------
-# 1回フロー（完全再構築）
-# ----------------------
-def run_cycle(page, label):
+# -------------------
+# 初期導線
+# -------------------
+def goto_calendar(page):
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
 
-    log(f"\n=== {label} ===")
-
-    goto_start(page)
-
-    # メニュー遷移
     click(page, "input[value='公共施設予約メニュー']")
     click(page, "input[value*='空き照会']")
     click(page, "input[value='次頁']")
-
-    # 施設
     click(page, "input[value*='柳北']")
 
-    # カレンダー設定
     click(page, "input[name='ucPCFooter$btnForward']")
     click(page, "input[value='カレンダー']")
     click(page, "input[value='1ヶ月']")
     click(page, "input[name='ucPCFooter$btnForward']")
 
-    # 画面安定待ち
-    page.wait_for_timeout(3000)
-
-    # 表示確認
     page.wait_for_selector("a[id*='lnkKoma']", timeout=20000)
 
-    data = extract(page)
 
-    log(f"[{label}] 件数: {len(data)}")
-
-    return data
-
-
-# ----------------------
+# -------------------
 # メイン
-# ----------------------
+# -------------------
 def run():
 
     with sync_playwright() as p:
@@ -112,16 +86,40 @@ def run():
         page = browser.new_page()
 
         try:
-            # 1回目（現在月）
-            data1 = run_cycle(page, "CURRENT")
+            # =========================
+            # 初期化
+            # =========================
+            goto_calendar(page)
 
-            # 2回目（完全リセットして再取得）
-            data2 = run_cycle(page, "NEXT_MONTH")
+            # =========================
+            # CURRENT
+            # =========================
+            current = extract(page)
+            log(f"[CURRENT] {len(current)}件")
 
+            # =========================
+            # NEXT MONTH（ここが本体）
+            # =========================
+            log("⏭️ btnNextPeriod click")
+
+            btn = page.locator("#btnNextPeriod")
+
+            btn.wait_for(state="visible", timeout=20000)
+            btn.click()
+
+            # 重要：完全再描画待ち
+            page.wait_for_timeout(3000)
+            page.wait_for_selector("a[id*='lnkKoma']", timeout=20000)
+
+            next_month = extract(page)
+            log(f"[NEXT] {len(next_month)}件")
+
+            # =========================
             # 統合
-            final = sorted(set(data1 + data2))
+            # =========================
+            final = sorted(set(current + next_month))
 
-            log(f"\nFINAL: {final}")
+            log(f"FINAL: {final}")
 
             if final:
                 msg = "@everyone\n🏸 柳北スポーツプラザ 空き情報\n" + "\n".join(final)
