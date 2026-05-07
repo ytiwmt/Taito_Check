@@ -4,7 +4,7 @@ import os
 import re
 import datetime
 
-VERSION = "v7.32-final-stable"
+VERSION = "v7.33-btnNextPeriod-real-click"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
@@ -20,9 +20,14 @@ def log(msg):
 
 def send(msg):
     log(f"送信内容:\n{msg}")
+
     if WEBHOOK_URL:
         try:
-            requests.post(WEBHOOK_URL, json={"content": msg})
+            requests.post(
+                WEBHOOK_URL,
+                json={"content": msg},
+                timeout=10
+            )
         except Exception as e:
             log(f"❌ Webhook失敗: {e}")
 
@@ -34,86 +39,85 @@ def parse(page, label):
     results = []
 
     links = page.locator("a[id*='lnkKoma']").all()
+
     log(f"[{label}] link数: {len(links)}")
 
     for l in links:
         try:
             txt = l.inner_text()
-            txt = txt.replace("\xa0", "").replace(" ", "").strip()
+
+            txt = (
+                txt
+                .replace("\xa0", "")
+                .replace(" ", "")
+                .replace("\n", "")
+                .strip()
+            )
+
         except:
             continue
 
         m = re.search(r"(\d+)(○|△|×|抽選)", txt)
+
         if m:
             results.append(f"{m.group(1)}{m.group(2)}")
 
     log(f"[{label}] 抽出件数: {len(results)}")
+
     return results
 
 
 def analyze(results, label):
-    ok = [r for r in results if "○" in r or "△" in r]
-    lot = [r for r in results if "抽選" in r]
-    ng = [r for r in results if "×" in r]
-    log(f"{label}: ○△={len(ok)} / 抽選={len(lot)} / ×={len(ng)}")
+    ok = [x for x in results if "○" in x or "△" in x]
+    lot = [x for x in results if "抽選" in x]
+    ng = [x for x in results if "×" in x]
+
+    log(
+        f"{label}: "
+        f"○△={len(ok)} / "
+        f"抽選={len(lot)} / "
+        f"×={len(ng)}"
+    )
 
 
 # =========================
-# 次ページ（描画待ち修正版）
+# 次ページ
 # =========================
 def go_next(page):
-    log("⏭️ 次ページ（POSTBACK + DOM変化待ち）")
+    log("⏭️ 次ページ（btnNextPeriod本押し）")
 
     try:
-        before_count = page.locator("a[id*='lnkKoma']").count()
-        log(f"遷移前リンク数: {before_count}")
+        before = page.locator("a[id*='lnkKoma']").count()
 
-        page.evaluate("""
-            () => {
-                const form = document.forms[0];
+        log(f"遷移前リンク数: {before}")
 
-                let et = document.querySelector("input[name='__EVENTTARGET']");
-                if (!et) {
-                    et = document.createElement("input");
-                    et.type = "hidden";
-                    et.name = "__EVENTTARGET";
-                    form.appendChild(et);
-                }
-                et.value = "dlRepeat2$ctl00$tpItem2$Migrated_lnkNextSpan";
+        # ボタン存在確認
+        page.locator("#btnNextPeriod").wait_for(timeout=10000)
 
-                let ea = document.querySelector("input[name='__EVENTARGUMENT']");
-                if (!ea) {
-                    ea = document.createElement("input");
-                    ea.type = "hidden";
-                    ea.name = "__EVENTARGUMENT";
-                    form.appendChild(ea);
-                }
-                ea.value = "";
+        # ★本物のボタン押下
+        page.locator("#btnNextPeriod").click(force=True)
 
-                form.submit();
-            }
-        """)
+        # ASP.NET描画待ち
+        page.wait_for_timeout(5000)
 
-        # ★ここが最重要
-        page.wait_for_function(
-            """(prev) => {
-                const now = document.querySelectorAll("a[id*='lnkKoma']").length;
-                return now !== prev;
-            }""",
-            arg=before_count,
-            timeout=15000
-        )
+        after = page.locator("a[id*='lnkKoma']").count()
 
-        page.wait_for_selector("a[id*='lnkKoma']", timeout=15000)
+        log(f"遷移後リンク数: {after}")
 
-        after_count = page.locator("a[id*='lnkKoma']").count()
-        log(f"遷移後リンク数: {after_count}")
+        # デバッグ
+        body = page.inner_text("body")[:1500]
 
-        if after_count == 0:
-            log("❌ DOM更新されたがデータなし")
+        log(f"BODY先頭:\n{body}")
+
+        if after <= 0:
+            log("❌ lnkKoma消失")
             return False
 
-        log("✅ 2ページ目取得成功")
+        if before == after:
+            log("⚠️ link数変化なし")
+
+        log("✅ 2ページ取得成功")
+
         return True
 
     except Exception as e:
@@ -126,56 +130,123 @@ def go_next(page):
 # =========================
 def run():
     with sync_playwright() as p:
+
         log(f"🚀 {VERSION}")
 
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox"]
+        )
+
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800}
+        )
+
+        page = context.new_page()
 
         final = []
 
         try:
+            # =========================
+            # 初期アクセス
+            # =========================
             page.goto(BASE_URL)
 
-            page.locator("input[type='submit']", has_text="公共施設予約メニュー").first.click()
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[type='submit']", has_text="空き照会").first.click()
+            # 公共施設予約メニュー
+            page.locator(
+                "input[type='submit']",
+                has_text="公共施設予約メニュー"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[type='submit']", has_text="次頁").first.click()
+            # 空き照会
+            page.locator(
+                "input[type='submit']",
+                has_text="空き照会"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[type='submit']", has_text="柳北").first.click()
+            # 次頁
+            page.locator(
+                "input[type='submit']",
+                has_text="次頁"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[name='ucPCFooter$btnForward']").first.click()
+            # 柳北
+            page.locator(
+                "input[type='submit']",
+                has_text="柳北"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[type='submit']", has_text="カレンダー").first.click()
+            # 次へ
+            page.locator(
+                "input[name='ucPCFooter$btnForward']"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[type='submit']", has_text="1ヶ月").first.click()
+            # カレンダー
+            page.locator(
+                "input[type='submit']",
+                has_text="カレンダー"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
-            page.locator("input[name='ucPCFooter$btnForward']").first.click()
+            # 1ヶ月
+            page.locator(
+                "input[type='submit']",
+                has_text="1ヶ月"
+            ).first.click()
+
+            page.wait_for_load_state("networkidle")
+
+            # 次へ
+            page.locator(
+                "input[name='ucPCFooter$btnForward']"
+            ).first.click()
+
             page.wait_for_load_state("networkidle")
 
             # =========================
-            # 1ページ
+            # 1ページ目
             # =========================
             log("📑 1ページ目")
+
             res1 = parse(page, "1P")
+
             analyze(res1, "1P")
+
             final.extend(res1)
 
             # =========================
-            # 2ページ
+            # 2ページ目
             # =========================
             if go_next(page):
+
                 log("📑 2ページ目")
+
                 res2 = parse(page, "2P")
+
                 analyze(res2, "2P")
+
                 final.extend(res2)
+
             else:
                 log("⚠️ 2ページ取得失敗")
 
@@ -189,25 +260,42 @@ def run():
 
             log(f"📦 FINAL: {final_unique}")
 
+            # =========================
             # 通知
-            if any(("○" in x or "△" in x) for x in final_unique):
+            # =========================
+            has_open = any(
+                ("○" in x or "△" in x)
+                for x in final_unique
+            )
+
+            if has_open:
+
                 msg = (
                     f"@everyone\n"
                     f"🏸 空きあり [{VERSION}]\n"
                     f"{len(final_unique)}件\n"
-                    f"```\n" + "\n".join(final_unique) + "\n```"
+                    f"```\n"
+                    + "\n".join(final_unique)
+                    + "\n```"
                 )
+
             else:
                 msg = f"🏸 空きなし [{VERSION}]"
 
             send(msg)
 
         except Exception as e:
+
             log(f"🔥 ERROR: {e}")
-            send(f"⚠️ エラー [{VERSION}]\n{e}")
+
+            send(
+                f"⚠️ エラー [{VERSION}]\n{e}"
+            )
 
         finally:
+
             log("🔒 END")
+
             browser.close()
 
 
