@@ -1,32 +1,56 @@
-import requests
 import os
 import re
-import datetime
+import time
+import requests
 from playwright.sync_api import sync_playwright
 
-VERSION = "v8-fixed-restart-model"
+VERSION = "v9.0-stable-reset"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
 
+# ----------------------
+# log
+# ----------------------
 def log(msg):
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+    print(msg)
 
 
 def send(msg):
-    log("送信内容:\n" + msg)
+    log("\n=== SEND ===")
+    log(msg)
+
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg})
 
 
-# -----------------------
-# 抽出（固定）
-# -----------------------
+# ----------------------
+# 安定クリック
+# ----------------------
+def click(page, selector, timeout=15000):
+    el = page.locator(selector).first
+    el.wait_for(state="visible", timeout=timeout)
+    el.scroll_into_view_if_needed()
+    el.click()
+    page.wait_for_timeout(1200)
+
+
+# ----------------------
+# 初期化（重要）
+# ----------------------
+def goto_start(page):
+    page.goto(BASE_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(3000)
+
+
+# ----------------------
+# 抽出ロジック
+# ----------------------
 def extract(page):
     links = page.locator("a[id*='lnkKoma']").all()
-    res = []
+    result = []
 
     for l in links:
         try:
@@ -36,36 +60,38 @@ def extract(page):
 
         m = re.search(r"(\d+)(○|△|×|抽選)", t)
         if m:
-            res.append(f"{m.group(1)}{m.group(2)}")
+            result.append(f"{m.group(1)}{m.group(2)}")
 
-    return res
+    return result
 
 
-# -----------------------
-# 1回の完全フロー
-# -----------------------
+# ----------------------
+# 1回フロー（完全再構築）
+# ----------------------
 def run_cycle(page, label):
 
-    log(f"=== {label} ===")
+    log(f"\n=== {label} ===")
 
-    page.goto(BASE_URL)
-    page.wait_for_timeout(2000)
+    goto_start(page)
 
-    page.locator("input[value='公共施設予約メニュー']").click()
-    page.locator("input[value^='空き照会']").click()
-    page.locator("input[value='次頁']").click()
+    # メニュー遷移
+    click(page, "input[value='公共施設予約メニュー']")
+    click(page, "input[value*='空き照会']")
+    click(page, "input[value='次頁']")
 
-    page.locator("input[value*='柳北']").first.click()
+    # 施設
+    click(page, "input[value*='柳北']")
 
-    page.locator("input[name='ucPCFooter$btnForward']").click()
+    # カレンダー設定
+    click(page, "input[name='ucPCFooter$btnForward']")
+    click(page, "input[value='カレンダー']")
+    click(page, "input[value='1ヶ月']")
+    click(page, "input[name='ucPCFooter$btnForward']")
 
-    page.locator("input[value='カレンダー']").click()
-    page.locator("input[value='1ヶ月']").click()
-
-    page.locator("input[name='ucPCFooter$btnForward']").click()
-
+    # 画面安定待ち
     page.wait_for_timeout(3000)
 
+    # 表示確認
     page.wait_for_selector("a[id*='lnkKoma']", timeout=20000)
 
     data = extract(page)
@@ -75,9 +101,9 @@ def run_cycle(page, label):
     return data
 
 
-# -----------------------
+# ----------------------
 # メイン
-# -----------------------
+# ----------------------
 def run():
 
     with sync_playwright() as p:
@@ -89,22 +115,24 @@ def run():
             # 1回目（現在月）
             data1 = run_cycle(page, "CURRENT")
 
-            # 2回目（重要：完全再アクセス）
+            # 2回目（完全リセットして再取得）
             data2 = run_cycle(page, "NEXT_MONTH")
 
+            # 統合
             final = sorted(set(data1 + data2))
 
-            log(f"FINAL: {final}")
+            log(f"\nFINAL: {final}")
 
             if final:
-                msg = "@everyone\n🏸 空きあり\n" + "\n".join(final)
+                msg = "@everyone\n🏸 柳北スポーツプラザ 空き情報\n" + "\n".join(final)
             else:
-                msg = "空きなし"
+                msg = "🏸 空きなし"
 
             send(msg)
 
         except Exception as e:
             log(f"ERROR: {e}")
+            page.screenshot(path="error.png", full_page=True)
 
         finally:
             browser.close()
