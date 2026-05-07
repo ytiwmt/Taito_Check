@@ -8,7 +8,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v8.6-separated-month-output"
+VERSION = "v9-fast-route"
 
 
 # =========================================
@@ -45,40 +45,10 @@ def parse(page, label):
 
     results = []
 
-    tables = page.locator("table").all()
+    # 固定テーブル直指定
+    table = page.locator("table").nth(21)
 
-    log(f"[{label}] table数: {len(tables)}")
-
-    gym_table = None
-
-    for idx, table in enumerate(tables):
-
-        try:
-
-            text = table.inner_text()
-
-            # 体育館専用テーブルのみ
-            if (
-                "体育館" in text
-                and "庭球場" not in text
-            ):
-
-                gym_table = table
-
-                log(f"[{label}] 体育館テーブル index={idx}")
-
-                break
-
-        except:
-            pass
-
-    if gym_table is None:
-
-        log(f"[{label}] ❌ 体育館テーブルなし")
-
-        return []
-
-    links = gym_table.locator(
+    links = table.locator(
         "a[id*='lnkKoma']"
     ).all()
 
@@ -122,7 +92,23 @@ def parse(page, label):
 
 
 # =========================================
-# setup
+# navigation
+# =========================================
+
+def click(page, selector, wait_selector=None):
+
+    page.locator(selector).first.click()
+
+    if wait_selector:
+
+        page.wait_for_selector(
+            wait_selector,
+            timeout=15000
+        )
+
+
+# =========================================
+# open
 # =========================================
 
 def open_calendar(page):
@@ -132,172 +118,121 @@ def open_calendar(page):
         wait_until="domcontentloaded"
     )
 
-    page.wait_for_timeout(3000)
-
     # 公共施設予約メニュー
-    page.locator(
+    click(
+        page,
         "input[value='公共施設予約メニュー']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
+    )
 
     # 空き照会
-    page.locator(
+    click(
+        page,
         "input[value*='空き照会']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
+    )
 
     # 次頁
-    page.locator(
+    click(
+        page,
         "input[value='次頁']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    )
 
     # 柳北
     page.locator(
         "input[value*='柳北']"
-    ).first.wait_for(timeout=30000)
+    ).first.wait_for(timeout=15000)
 
-    page.locator(
+    click(
+        page,
         "input[value*='柳北']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
+    )
 
     # 次へ
-    page.locator(
+    click(
+        page,
         "input[name='ucPCFooter$btnForward']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
+    )
 
     # カレンダー
-    page.locator(
+    click(
+        page,
         "input[value='カレンダー']"
-    ).first.click()
+    )
 
-    page.wait_for_timeout(1000)
-
-    # =====================================
-    # 表示開始日 = 今月1日
-    # =====================================
+    # ==========================
+    # 開始日 = 今月1日
+    # ==========================
 
     now = datetime.now()
 
-    # year
-    txt_year = page.locator("#txtYear")
+    page.locator("#txtYear").fill(
+        str(now.year)
+    )
 
-    txt_year.click()
+    page.locator("#txtMonth").fill(
+        str(now.month)
+    )
 
-    page.keyboard.press("Control+A")
-    page.keyboard.press("Backspace")
-
-    txt_year.type(str(now.year))
-
-    # month
-    txt_month = page.locator("#txtMonth")
-
-    txt_month.click()
-
-    page.keyboard.press("Control+A")
-    page.keyboard.press("Backspace")
-
-    txt_month.type(str(now.month))
-
-    # day
-    txt_day = page.locator("#txtDay")
-
-    txt_day.click()
-
-    page.keyboard.press("Control+A")
-    page.keyboard.press("Backspace")
-
-    txt_day.type("1")
+    page.locator("#txtDay").fill("1")
 
     log(f"開始日: {now.year}/{now.month}/1")
 
-    page.wait_for_timeout(1000)
-
     # 1ヶ月
-    page.locator(
+    click(
+        page,
         "input[value='1ヶ月']"
-    ).first.click()
-
-    page.wait_for_timeout(1000)
+    )
 
     # 次へ
-    page.locator(
-        "input[name='ucPCFooter$btnForward']"
-    ).first.click()
-
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(5000)
-
-    page.wait_for_selector(
-        "a[id*='lnkKoma']",
-        timeout=30000
+    click(
+        page,
+        "input[name='ucPCFooter$btnForward']",
+        "a[id*='lnkKoma']"
     )
 
 
 # =========================================
-# next page
+# next
 # =========================================
 
 def go_next(page):
 
-    try:
+    before = page.locator(
+        "a[id*='lnkKoma']"
+    ).count()
 
-        log("⏭️ btnNextPeriod click")
+    log(f"before links: {before}")
 
-        before = page.locator(
-            "a[id*='lnkKoma']"
-        ).count()
+    page.locator(
+        "#btnNextPeriod"
+    ).click(force=True)
 
-        log(f"before links: {before}")
+    page.wait_for_function(
+        """
+        (before) => {
+            return document
+                .querySelectorAll("a[id*='lnkKoma']")
+                .length !== before
+        }
+        """,
+        before,
+        timeout=15000
+    )
 
-        page.locator(
-            "#btnNextPeriod"
-        ).click(force=True)
+    after = page.locator(
+        "a[id*='lnkKoma']"
+    ).count()
 
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(5000)
+    log(f"after links: {after}")
 
-        body = page.inner_text("body")
+    body = page.inner_text("body")
 
-        after = page.locator(
-            "a[id*='lnkKoma']"
-        ).count()
+    if "お探しのページを表示できません" in body:
 
-        log(f"after links: {after}")
-
-        if "お探しのページを表示できません" in body:
-
-            log("❌ 不正遷移")
-
-            log(body[:500])
-
-            return []
-
-        return parse(page, "NEXT")
-
-    except Exception as e:
-
-        log(f"❌ NEXT ERROR: {e}")
-
-        try:
-            body = page.inner_text("body")
-            log(body[:1000])
-        except:
-            pass
+        log("❌ 不正遷移")
 
         return []
+
+    return parse(page, "NEXT")
 
 
 # =========================================
@@ -313,14 +248,7 @@ def run():
             args=["--no-sandbox"]
         )
 
-        context = browser.new_context(
-            viewport={
-                "width": 1400,
-                "height": 1200
-            }
-        )
-
-        page = context.new_page()
+        page = browser.new_page()
 
         try:
 
@@ -348,19 +276,18 @@ def run():
                 else now.month + 1
             )
 
-            # =================================
-            # message
-            # =================================
-
             msg = (
                 "@everyone\n"
                 f"🏸 柳北スポーツプラザ [{VERSION}]\n\n"
+
                 f"【{current_month}月】\n"
                 + (
                     "\n".join(current)
                     if current else "データなし"
                 )
+
                 + "\n\n"
+
                 f"【{next_month}月】\n"
                 + (
                     "\n".join(next_data)
@@ -385,6 +312,7 @@ def run():
             send(f"⚠️ ERROR\n{e}")
 
         finally:
+
             browser.close()
 
 
