@@ -16,7 +16,6 @@ def scan(page):
     results = []
 
     links = page.locator("a[id*='lnkKoma']").all()
-
     for l in links:
         try:
             txt = l.inner_text().replace("\xa0", "").strip()
@@ -32,7 +31,6 @@ def scan(page):
 
 
 def full_flow(page):
-    # ===== ポータルから完全再構築 =====
     page.goto(BASE_URL)
 
     page.locator("input[value='公共施設予約メニュー']").click()
@@ -52,41 +50,55 @@ def full_flow(page):
     return page
 
 
+def next_available(page):
+    body = page.inner_text("body")
+
+    # ★重要：次期間存在チェック
+    if "次の期間を表示" not in body and "btnNextPeriod" not in body:
+        return False
+
+    btn = page.locator("#btnNextPeriod")
+    return btn.count() > 0
+
+
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
 
         try:
             # =====================
-            # 1回目（現在月）
+            # CURRENT
             # =====================
-            page = browser.new_page()
+            page1 = browser.new_page()
             print("=== CURRENT ===")
 
-            page = full_flow(page)
-            current = scan(page)
+            page1 = full_flow(page1)
+            current = scan(page1)
             print(f"[SCAN] CURRENT: {len(current)}件")
-
-            page.close()
+            page1.close()
 
             # =====================
-            # 2回目（次期間）
+            # NEXT
             # =====================
-            page = browser.new_page()
+            page2 = browser.new_page()
             print("=== NEXT ===")
 
-            page = full_flow(page)
+            page2 = full_flow(page2)
 
-            # ★ここでのみ次期間
-            btn = page.locator("#btnNextPeriod")
-            if btn.count() > 0:
-                btn.click()
-                page.wait_for_timeout(3000)
+            if next_available(page2):
+                print("⏭️ 次期間あり → クリック")
 
-            next_data = scan(page)
-            print(f"[SCAN] NEXT: {len(next_data)}件")
+                page2.locator("#btnNextPeriod").click()
+                page2.wait_for_timeout(3000)
 
-            page.close()
+                next_data = scan(page2)
+                print(f"[SCAN] NEXT: {len(next_data)}件")
+
+            else:
+                print("⏭️ 次期間なし → スキップ")
+                next_data = []
+
+            page2.close()
 
             # =====================
             # 集約
