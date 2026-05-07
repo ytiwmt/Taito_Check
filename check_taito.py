@@ -8,7 +8,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v8.5-gym-only-final"
+VERSION = "v8.6-separated-month-output"
 
 
 # =========================================
@@ -49,51 +49,72 @@ def parse(page, label):
 
     log(f"[{label}] table数: {len(tables)}")
 
+    gym_table = None
+
     for idx, table in enumerate(tables):
 
         try:
 
-            table_text = table.inner_text()
+            text = table.inner_text()
 
-            # 体育館テーブル限定
-            if "体育館" not in table_text:
-                continue
+            # 体育館専用テーブルのみ
+            if (
+                "体育館" in text
+                and "庭球場" not in text
+            ):
 
-            log(f"[{label}] 体育館テーブル検出 index={idx}")
+                gym_table = table
 
-            links = table.locator(
-                "a[id*='lnkKoma']"
-            ).all()
+                log(f"[{label}] 体育館テーブル index={idx}")
 
-            log(f"[{label}] link数: {len(links)}")
-
-            for l in links:
-
-                try:
-
-                    txt = (
-                        l.inner_text()
-                        .replace("\xa0", "")
-                        .replace(" ", "")
-                        .strip()
-                    )
-
-                    m = re.search(
-                        r"(\d+)(○|△|×|抽選)",
-                        txt
-                    )
-
-                    if m:
-
-                        results.append(
-                            f"{m.group(1)}{m.group(2)}"
-                        )
-
-                except:
-                    pass
+                break
 
         except:
             pass
+
+    if gym_table is None:
+
+        log(f"[{label}] ❌ 体育館テーブルなし")
+
+        return []
+
+    links = gym_table.locator(
+        "a[id*='lnkKoma']"
+    ).all()
+
+    log(f"[{label}] link数: {len(links)}")
+
+    for l in links:
+
+        try:
+
+            txt = (
+                l.inner_text()
+                .replace("\xa0", "")
+                .replace(" ", "")
+                .strip()
+            )
+
+            m = re.search(
+                r"(\d+)(○|△|×|抽選)",
+                txt
+            )
+
+            if m:
+
+                results.append(
+                    f"{m.group(1)}{m.group(2)}"
+                )
+
+        except:
+            pass
+
+    results = sorted(
+        list(set(results)),
+        key=lambda x: int(
+            re.sub(r"\D", "", x)
+        )
+    )
 
     log(f"[{label}] 件数: {len(results)}")
 
@@ -301,8 +322,6 @@ def run():
 
         page = context.new_page()
 
-        final = []
-
         try:
 
             open_calendar(page)
@@ -315,29 +334,38 @@ def run():
                 "CURRENT"
             )
 
-            final.extend(current)
-
             # NEXT
             log("=== NEXT ===")
 
             next_data = go_next(page)
 
-            final.extend(next_data)
+            now = datetime.now()
 
-            # FINAL
-            final = sorted(
-                list(set(final)),
-                key=lambda x: int(
-                    re.sub(r"\D", "", x)
-                )
+            current_month = now.month
+
+            next_month = (
+                1 if now.month == 12
+                else now.month + 1
             )
 
-            log(f"FINAL: {final}")
+            # =================================
+            # message
+            # =================================
 
             msg = (
                 "@everyone\n"
-                f"🏸 柳北スポーツプラザ [{VERSION}]\n"
-                + "\n".join(final)
+                f"🏸 柳北スポーツプラザ [{VERSION}]\n\n"
+                f"【{current_month}月】\n"
+                + (
+                    "\n".join(current)
+                    if current else "データなし"
+                )
+                + "\n\n"
+                f"【{next_month}月】\n"
+                + (
+                    "\n".join(next_data)
+                    if next_data else "データなし"
+                )
             )
 
             send(msg)
