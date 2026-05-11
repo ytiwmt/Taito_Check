@@ -9,7 +9,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL_Taito")
 
 BASE_URL = "https://shisetsu.city.taito.lg.jp/Wg_ModeSelect.aspx"
 
-VERSION = "v10.2-clean-log"
+VERSION = "v10.4-no-link-wait"
 
 WEEKS = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -41,6 +41,7 @@ def send(msg):
         return
 
     try:
+
         requests.post(
             WEBHOOK_URL,
             json={"content": msg},
@@ -87,25 +88,23 @@ def parse(page, label):
     # 体育館テーブル固定
     table = page.locator("table").nth(21)
 
-    links = table.locator(
-        "a[id*='lnkKoma']"
-    ).all()
+    cells = table.locator("a[id*='lnkKoma'], span").all()
 
-    log(f"[{label}] link数: {len(links)}")
+    log(f"[{label}] cell数: {len(cells)}")
 
-    for l in links:
+    for c in cells:
 
         try:
 
             txt = (
-                l.inner_text()
+                c.inner_text()
                 .replace("\xa0", "")
                 .replace(" ", "")
                 .strip()
             )
 
             m = re.search(
-                r"(\d+)\s*(○|△|×|抽選)",
+                r"(\d+)\s*(○|△|×|抽選|－)",
                 txt
             )
 
@@ -219,9 +218,10 @@ def open_calendar(page):
 
     click(
         page,
-        "input[name='ucPCFooter$btnForward']",
-        "a[id*='lnkKoma']"
+        "input[name='ucPCFooter$btnForward']"
     )
+
+    page.wait_for_timeout(1500)
 
 
 # =========================================
@@ -230,11 +230,9 @@ def open_calendar(page):
 
 def go_next(page):
 
-    before = page.locator(
-        "a[id*='lnkKoma']"
-    ).count()
-
-    log(f"before links: {before}")
+    before_html = page.locator(
+        "body"
+    ).inner_html()
 
     page.locator(
         "#btnNextPeriod"
@@ -246,20 +244,14 @@ def go_next(page):
     page.wait_for_function(
         """
         (before) => {
-            return document
-                .querySelectorAll("a[id*='lnkKoma']")
-                .length > before
+            return document.body.innerHTML !== before
         }
         """,
-        arg=before,
+        arg=before_html,
         timeout=7000
     )
 
-    after = page.locator(
-        "a[id*='lnkKoma']"
-    ).count()
-
-    log(f"after links: {after}")
+    page.wait_for_timeout(1500)
 
     body = page.inner_text("body")
 
