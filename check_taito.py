@@ -344,7 +344,7 @@ def has_weekend_or_holiday(data, year, month):
 # main
 # =========================================
 
-def run check():
+def run_check():
 
     should_mention = False
 
@@ -466,4 +466,4 @@ def run check():
 
 
 if __name__ == "__main__":
-    run check()
+    run_check()
